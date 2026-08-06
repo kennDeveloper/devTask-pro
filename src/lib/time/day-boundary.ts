@@ -43,12 +43,8 @@
  * what keeps consecutive ranges tiling the timeline with no gap and no overlap.
  */
 
-import {
-  isIsoDate,
-  todayInZone,
-  toIsoDate,
-  zoneOffsetMs,
-} from "@/lib/time/user-tz";
+import { addDays, type CalendarDate } from "@/lib/recurrence/calendar";
+import { isIsoDate, todayInZone, zoneOffsetMs } from "@/lib/time/user-tz";
 
 /** The UTC instants bounding one local calendar day: `[start, end)`. */
 export interface DayRange {
@@ -57,8 +53,6 @@ export interface DayRange {
   /** First instant of the *next* local day. **Exclusive.** */
   end: Date;
 }
-
-const MS_PER_DAY = 86_400_000;
 
 /**
  * A malformed date is a programming error, not data.
@@ -89,15 +83,81 @@ function requireIsoDate(isoDate: string): [number, number, number] {
  * which would make "add 24 hours" wrong twice a year — never enters the
  * picture. `dayRangeInZone` gets its zone-awareness from resolving each day's
  * start independently, not from this function.
+ *
+ * The arithmetic itself lives in `src/lib/recurrence/calendar.ts`, which is the
+ * module that owns calendar-space questions and knows nothing about zones. This
+ * wrapper adds the throw-on-malformed contract described above, which the
+ * recurrence engine deliberately does not want: an unparseable stored rule
+ * should cost that series its rows, not the page.
  */
 export function addDaysToIsoDate(isoDate: string, days: number): string {
-  const [year, month, day] = requireIsoDate(isoDate);
-  const shifted = new Date(Date.UTC(year, month - 1, day) + days * MS_PER_DAY);
-  return toIsoDate({
-    year: shifted.getUTCFullYear(),
-    month: shifted.getUTCMonth() + 1,
-    day: shifted.getUTCDate(),
-  });
+  requireIsoDate(isoDate);
+  return addDays(isoDate, days);
+}
+
+/**
+ * The UTC instant at which a wall clock in `timeZone` read `date` at `hh:mm`.
+ *
+ * ## Why the offset is resolved twice
+ *
+ * A zone's offset is a function of the *instant*, not of the date, so the offset
+ * in force at the misread-as-UTC timestamp is not always the one in force at the
+ * instant being solved for — the two differ across a DST cutover. The first pass
+ * produces a candidate; the second asks what the offset actually was *there*.
+ *
+ * ## Why this is the whole of acceptance criterion 20
+ *
+ * A recurring task set to 09:00 must fire at 09:00 local on both sides of a DST
+ * transition. Because the offset is resolved at the instant, 09:00 on
+ * 2026-03-07 in `America/New_York` comes back as 14:00Z and 09:00 on 2026-03-09
+ * as 13:00Z — nine in the morning, both times. Storing one instant and adding a
+ * fixed 24-hour multiple would drift by an hour for half the year, which is the
+ * version of this that passes review because it is right in October.
+ *
+ * ## What happens when the requested wall clock does not exist
+ *
+ * No verification step, unlike `startOfDayInZone` below — deliberately, because
+ * for a *chosen* time of day there may be no right answer to verify against:
+ * where a zone springs forward at 02:00, 02:30 never happens that day.
+ *
+ * The behaviour in that gap is deterministic and worth stating rather than
+ * discovering. The refined candidate interprets the reading at the **pre**-
+ * transition offset, so it lands in the last hour before the gap — up to an hour
+ * earlier than asked for, and in a zone that springs forward *at midnight*
+ * (`America/Havana`) that hour is late on the previous day. Measured on this
+ * stack, not assumed: 00:30 on 2023-03-12 in Havana resolves to
+ * `2023-03-12T04:30:00Z`, which reads 23:30 on the 11th.
+ *
+ * For a deadline that means becoming late up to an hour early, on one day a
+ * year, in one zone, for a time that does not exist. `occurs_on` is unaffected —
+ * it is a bare date and never passes through here. Verifying the candidate the
+ * way `startOfDayInZone` does would be the wrong contract: local midnight always
+ * exists somewhere in a local day, so there is a right answer to find; 02:30 on
+ * a spring-forward day has none.
+ *
+ * This is phase 2's behaviour unchanged — `localInputToInstant` delegates here.
+ */
+export function instantFromWallClock(
+  timeZone: string,
+  date: CalendarDate,
+  hour: number,
+  minute: number,
+  second = 0,
+): Date {
+  // The wall-clock reading, deliberately misread as a UTC instant. It is wrong
+  // by exactly the zone's offset — the quantity being solved for.
+  const asIfUtc = Date.UTC(
+    date.year,
+    date.month - 1,
+    date.day,
+    hour,
+    minute,
+    second,
+  );
+  const firstGuess = asIfUtc - zoneOffsetMs(timeZone, new Date(asIfUtc));
+  const refined = asIfUtc - zoneOffsetMs(timeZone, new Date(firstGuess));
+
+  return new Date(refined);
 }
 
 /**
