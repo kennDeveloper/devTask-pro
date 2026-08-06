@@ -1,4 +1,7 @@
+import { config as loadEnv } from "dotenv";
 import { defineConfig, devices } from "@playwright/test";
+
+loadEnv({ path: ".env.local", quiet: true });
 
 const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000";
 
