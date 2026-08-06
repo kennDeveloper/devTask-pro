@@ -243,6 +243,38 @@
     font-family: var(--font-mono);
   }
 
+  /* -------------------------------------------------------------------------
+     Native <dialog> backdrop — see src/components/ui/dialog.tsx
+
+     THE VALUES BELOW ARE DELIBERATELY LITERAL, NOT `var(--ink)`.
+
+     `::backdrop` generates a box with no parent in the element tree. The spec
+     was changed so it inherits from its originating element, but that landed at
+     different times in different engines, and where it has not, custom property
+     lookup finds nothing and `var(--ink)` resolves to an invalid value — leaving
+     the backdrop fully transparent. The modal still works, so it looks like a
+     styling nit rather than the inheritance bug it is, and nobody catches it
+     until a screenshot review.
+
+     This file is where the palette is defined, so literals belong here; the
+     "tokens only" rule governs src/components/** and the rest of src/app/**.
+     These two are `--ink` at 45% / 60%, and must be updated with it.
+     ------------------------------------------------------------------------- */
+  dialog::backdrop {
+    background-color: oklch(0.222 0.009 268 / 0.45);
+  }
+
+  .dark dialog::backdrop {
+    background-color: oklch(0.145 0.008 268 / 0.6);
+  }
+
+  /* The platform makes everything behind a modal inert, but it does not stop the
+     page scrolling. `:has()` handles that with no JavaScript and no risk of a
+     class being left behind if a dialog unmounts while open. */
+  body:has(dialog[open]) {
+    overflow: hidden;
+  }
+
   ::selection {
     background: var(--accent-soft);
     color: var(--accent-deep);
