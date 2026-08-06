@@ -54,18 +54,31 @@ export interface AdminActionSpec {
   from: readonly ProfileStatus[];
   /**
    * Whether this action bans the account in Supabase Auth as well as moving the
-   * status column.
+   * status column. `false` means the opposite — *lift* any ban — so the auth
+   * state after an action is a pure function of the action rather than of the
+   * order the actions happened to arrive in.
    *
-   * A status flag alone leaves an already-issued access token working. Measured
-   * against the local stack: after a ban, `GET /auth/v1/user` still returns 200
-   * — so the proxy's live `profiles.status` read is what lands a suspended user
-   * on /no-access on their very next navigation — but the refresh grant returns
-   * `400 user_banned`, so the session cannot outlive its current access token.
-   * The two mechanisms cover different halves and neither is redundant.
+   * ## Only `suspend` bans, and that is a decision rather than an oversight
    *
-   * Reject bans for the same reason suspend does: a rejected signup can have
-   * confirmed its email and be holding a live token. `false` here means the
-   * opposite — lift the ban — so approve and reinstate share one code path.
+   * `docs/gsd/devtask-pro-v1.md`: *"Suspension **additionally** bans in Supabase
+   * so live sessions die at once; a status flag alone would leave an active JWT
+   * working until expiry."* It says suspension, and only suspension.
+   *
+   * Extending the ban to `reject` looks like symmetry and is a bug. Measured
+   * against the local stack: **a banned account cannot sign in at all** —
+   * `signInWithPassword` returns `user_banned`. Criterion 2 says a rejected user
+   * *sees* `/no-access`, and nobody can see a screen they cannot authenticate
+   * far enough to reach. Banning them would replace an honest "this account
+   * cannot be used" page with a generic sign-in failure, which is the opposite
+   * of what the (gate) route group was built for.
+   *
+   * A rejected user is still shut out of everything: the proxy reads
+   * `profiles.status` live on every request and `activeProcedure` re-checks it,
+   * so the token they hold buys them nothing. What the ban adds for suspension
+   * is that the session cannot outlive its current access token — measured, the
+   * refresh grant returns `400 user_banned` while `GET /auth/v1/user` still
+   * returns 200, which is precisely why the proxy's live read is what lands them
+   * on /no-access rather than the ban doing it.
    */
   bans: boolean;
   /**
@@ -106,12 +119,14 @@ export const ADMIN_ACTION_SPECS: Record<AdminAction, AdminActionSpec> = {
   reject: {
     label: "Reject",
     result: "rejected",
+    // Deliberately not banned — see the long note on `bans` above. A rejected
+    // user must stay able to sign in far enough to be told why they cannot.
+    bans: false,
     from: ["pending"],
-    bans: true,
     destructive: true,
     confirmTitle: "Reject this signup?",
     confirmBody:
-      "They will not be able to use the app, and any session they hold now will stop working. You can approve them later if this was a mistake.",
+      "They will not be able to use the app, and will be told so the next time they sign in. You can approve them later if this was a mistake.",
   },
   suspend: {
     label: "Suspend",
@@ -170,18 +185,6 @@ export function canApply(action: AdminAction, status: ProfileStatus): boolean {
 /** The status the account ends up in. Ask `canApply` first. */
 export function resultOf(action: AdminAction): ProfileStatus {
   return ADMIN_ACTION_SPECS[action].result;
-}
-
-/**
- * Whether this action takes access away, and so has to survive the last-admin
- * guard when it is aimed at another administrator.
- *
- * Derived from the resulting status rather than listed separately: any future
- * action that lands somewhere other than `active` is covered without anybody
- * remembering to add it here.
- */
-export function revokesAccess(action: AdminAction): boolean {
-  return resultOf(action) !== "active";
 }
 
 /**

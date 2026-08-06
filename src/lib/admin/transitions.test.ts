@@ -9,7 +9,6 @@ import {
   canApply,
   isAdminAction,
   resultOf,
-  revokesAccess,
   stampsApproval,
   type AdminAction,
 } from "./transitions";
@@ -114,13 +113,33 @@ describe("the flags the UI and the router read", () => {
   });
 
   /**
-   * A rejected signup can have confirmed its email and be holding a live token,
-   * exactly like a suspended account. Banning one and not the other would leave
-   * a rejected user working until their token expired.
+   * ONLY SUSPEND BANS, and this is the guard on that.
+   *
+   * `docs/gsd/devtask-pro-v1.md` decided the Supabase ban for *suspension*.
+   * Extending it to `reject` reads like symmetry and breaks criterion 2: a
+   * banned account cannot sign in at all — measured, `signInWithPassword`
+   * returns `user_banned` — so a rejected user could never reach the
+   * `/no-access` screen they are supposed to **see**. They would get a generic
+   * sign-in failure instead, which is exactly what the (gate) route group exists
+   * to avoid. This spec failed the day that was tried.
    */
-  it("bans on the two actions that revoke, and lifts the ban on the two that grant", () => {
+  it("bans on suspend and on nothing else", () => {
+    const banning = ADMIN_ACTIONS.filter(
+      (action) => ADMIN_ACTION_SPECS[action].bans,
+    );
+    expect(banning).toEqual(["suspend"]);
+  });
+
+  /**
+   * The other three lift it, so the auth ban is a pure function of the last
+   * action rather than of the order actions arrived in. Reinstate is the one
+   * that lifts a ban which really exists; approve and reject are no-ops in
+   * practice and are written the same way so there is a single code path.
+   */
+  it("lifts the ban on every action that leaves the account usable", () => {
     for (const action of ADMIN_ACTIONS) {
-      expect(ADMIN_ACTION_SPECS[action].bans).toBe(revokesAccess(action));
+      if (action === "suspend") continue;
+      expect(ADMIN_ACTION_SPECS[action].bans).toBe(false);
     }
   });
 

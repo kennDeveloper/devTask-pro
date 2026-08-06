@@ -232,9 +232,13 @@ describe("the transition table is re-decided server-side", () => {
   });
 
   it.each([
+    // Only `suspend` bans. A banned account cannot sign in at all — measured —
+    // so banning on reject would stop a rejected user ever reaching the
+    // /no-access screen criterion 2 says they must see. The other three lift
+    // the ban, so the auth state is a pure function of the last action.
     ["approve", "pending", "active", false],
     ["approve", "rejected", "active", false],
-    ["reject", "pending", "rejected", true],
+    ["reject", "pending", "rejected", false],
     ["suspend", "active", "suspended", true],
     ["reinstate", "suspended", "active", false],
   ] as const)(
