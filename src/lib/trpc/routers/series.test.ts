@@ -34,6 +34,7 @@ vi.mock("@/lib/db/repos/tags", () => ({
   remove: vi.fn(),
   tagsForOccurrences: vi.fn(),
   tagsForSeries: vi.fn(),
+  tagsForFeed: vi.fn(),
   setForOccurrence: vi.fn(),
   setForOccurrenceIn: vi.fn(),
   setForSeries: vi.fn(),

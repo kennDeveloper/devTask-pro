@@ -50,6 +50,7 @@ vi.mock("@/lib/db/repos/tags", () => ({
   remove: vi.fn(),
   tagsForOccurrences: vi.fn(),
   tagsForSeries: vi.fn(),
+  tagsForFeed: vi.fn(),
   setForOccurrence: vi.fn(),
   setForOccurrenceIn: vi.fn(),
   setForSeries: vi.fn(),
@@ -127,6 +128,10 @@ beforeEach(() => {
   vi.mocked(occurrences.listOverdue).mockResolvedValue([]);
   vi.mocked(tagsRepo.tagsForOccurrences).mockResolvedValue([]);
   vi.mocked(tagsRepo.tagsForSeries).mockResolvedValue([]);
+  vi.mocked(tagsRepo.tagsForFeed).mockResolvedValue({
+    occurrenceLinks: [],
+    seriesLinks: [],
+  });
   vi.mocked(tagsRepo.setForOccurrence).mockResolvedValue(undefined);
 });
 

@@ -210,6 +210,70 @@ export async function tagsForSeries(
 }
 
 /**
+ * Both sides of a list read's tags, in **one** scoped transaction.
+ *
+ * ## Why this exists rather than two calls
+ *
+ * `withUser()` is not free. Each call borrows a connection, opens a transaction,
+ * runs `set_config('request.jwt.claims', …)` and `set local role authenticated`,
+ * and commits — that is the mechanism the whole access model rests on, and the
+ * cost is paid per call rather than per statement.
+ *
+ * Phase 4 added tags to a feed that already made two such calls (the rows and the
+ * series), which would have made four. Two of them ask questions answered against
+ * the same identity at the same instant, so they belong in the same transaction:
+ * one demotion, two selects. That removes a doubling which would otherwise have
+ * been permanent, and it is measurable under the concurrency the e2e suite
+ * generates.
+ *
+ * This changes how many *transactions* a list costs, not how many queries — the
+ * two selects are still the two `feed.ts` needs.
+ */
+export async function tagsForFeed(
+  claims: UserClaims,
+  occurrenceIds: readonly string[],
+  seriesIds: readonly string[],
+): Promise<{ occurrenceLinks: TagLink[]; seriesLinks: TagLink[] }> {
+  if (occurrenceIds.length === 0 && seriesIds.length === 0) {
+    return { occurrenceLinks: [], seriesLinks: [] };
+  }
+
+  return withUser(claims, async (tx) => {
+    const occurrenceLinks =
+      occurrenceIds.length === 0
+        ? []
+        : await tx
+            .select({ ownerId: occurrenceTags.occurrenceId, tag: tags })
+            .from(occurrenceTags)
+            .innerJoin(tags, eq(tags.id, occurrenceTags.tagId))
+            .where(
+              and(
+                eq(occurrenceTags.userId, claims.sub),
+                inArray(occurrenceTags.occurrenceId, [...occurrenceIds]),
+              ),
+            )
+            .orderBy(sql`lower(${tags.name})`);
+
+    const seriesLinks =
+      seriesIds.length === 0
+        ? []
+        : await tx
+            .select({ ownerId: seriesTags.seriesId, tag: tags })
+            .from(seriesTags)
+            .innerJoin(tags, eq(tags.id, seriesTags.tagId))
+            .where(
+              and(
+                eq(seriesTags.userId, claims.sub),
+                inArray(seriesTags.seriesId, [...seriesIds]),
+              ),
+            )
+            .orderBy(sql`lower(${tags.name})`);
+
+    return { occurrenceLinks, seriesLinks };
+  });
+}
+
+/**
  * Replace an occurrence's tags, inside an already-open transaction.
  *
  * Takes `tx` rather than opening its own `withUser` because materialisation has

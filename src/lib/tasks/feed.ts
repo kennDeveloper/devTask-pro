@@ -323,26 +323,27 @@ function byDayDescending(a: ListedOccurrence, b: ListedOccurrence): number {
  *
  * One for the rows and one for the series, regardless of how many occurrences
  * are on screen — a daily series over a 91-day window is 91 projections and
- * still one `tagsForSeries` call, because they all share a rule. Resolving tags
- * per occurrence instead would make a list read N+1 in the most literal way.
+ * still one query, because they all share a rule. Resolving tags per occurrence
+ * instead would make a list read N+1 in the most literal way.
+ *
+ * Both run in a **single** `withUser()`: the transaction, not the statement, is
+ * what costs. See `tagsForFeed`.
  */
 async function loadTags(
   claims: UserClaims,
   rows: readonly TaskOccurrence[],
   live: readonly TaskSeries[],
 ): Promise<{ rowTags: Map<string, Tag[]>; seriesTags: Map<string, Tag[]> }> {
-  const [rowLinks, seriesLinks] = await Promise.all([
-    tagsRepo.tagsForOccurrences(
-      claims,
-      rows.map((row) => row.id),
-    ),
-    tagsRepo.tagsForSeries(
-      claims,
-      live.map((series) => series.id),
-    ),
-  ]);
+  const { occurrenceLinks, seriesLinks } = await tagsRepo.tagsForFeed(
+    claims,
+    rows.map((row) => row.id),
+    live.map((series) => series.id),
+  );
 
-  return { rowTags: groupTags(rowLinks), seriesTags: groupTags(seriesLinks) };
+  return {
+    rowTags: groupTags(occurrenceLinks),
+    seriesTags: groupTags(seriesLinks),
+  };
 }
 
 // ---------------------------------------------------------------------------
