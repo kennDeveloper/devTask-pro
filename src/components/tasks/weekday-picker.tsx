@@ -70,14 +70,17 @@ export function WeekdayPicker({
           return (
             <label
               key={option.value}
-              className="cursor-pointer"
+              className="relative inline-flex cursor-pointer"
               // The full name for the pointer; the accessible name comes from
               // the input's own label text, which is the same word.
               title={option.label}
             >
               <input
                 type="checkbox"
-                className="peer sr-only"
+                // See the note in `src/components/tags/tag-picker.tsx`: an
+                // `sr-only` input is clipped to the element's origin and the
+                // visible toggle then intercepts every click.
+                className="peer absolute inset-0 z-10 cursor-pointer opacity-0"
                 name={`${id}-${option.value}`}
                 checked={checked}
                 disabled={disabled}

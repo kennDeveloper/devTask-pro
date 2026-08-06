@@ -4,7 +4,14 @@ import { eq, sql } from "drizzle-orm";
 
 import { dbAdmin } from "@/lib/db/client";
 import { withUser } from "@/lib/db/rls";
-import { profiles, taskOccurrence, taskSeries } from "@/lib/db/schema";
+import {
+  occurrenceTags,
+  profiles,
+  seriesTags,
+  tags,
+  taskOccurrence,
+  taskSeries,
+} from "@/lib/db/schema";
 
 /**
  * THE RLS BOUNDARY PROOF.
@@ -753,5 +760,302 @@ describe("task_occurrence_series_day_uniq", () => {
     expect(attempt!.cause?.message ?? attempt!.message).toMatch(
       /task_occurrence_series_fk|foreign key/i,
     );
+  });
+});
+
+/**
+ * ===========================================================================
+ * CRITERION 6, ONCE MORE — for `tags` and the two join tables
+ * ===========================================================================
+ *
+ * `AGENTS.md`: *"When a phase adds a table holding user data, add a block there
+ * too."* Phase 4 adds three. A tag is a label somebody chose and applied to their
+ * private work — the set of them is a fair description of what a person does all
+ * day — so the same guarantee applies, and so does the same proof.
+ *
+ * Appended, like the phase-3 blocks above it. Nothing earlier in this file moves.
+ *
+ * The block ends with the assertion this phase's schema exists for: that a user
+ * **cannot attach their own tag to somebody else's task**. A foreign key check
+ * does not consult RLS, so the obvious two-FK design would have permitted it —
+ * the composite keys in 0007 are what make it impossible.
+ */
+describe("tags — the criterion 6 proof for the labelling tables", () => {
+  let tagOfA: string;
+  let tagOfB: string;
+  let taskOfAForTags: string;
+  let taskOfBForTags: string;
+
+  beforeAll(async () => {
+    const [a] = await dbAdmin
+      .insert(tags)
+      .values({ userId: userA, name: "A private label" })
+      .returning({ id: tags.id });
+    const [b] = await dbAdmin
+      .insert(tags)
+      .values({ userId: userB, name: "B private label" })
+      .returning({ id: tags.id });
+
+    tagOfA = a.id;
+    tagOfB = b.id;
+
+    const [ta] = await dbAdmin
+      .insert(taskOccurrence)
+      .values({ userId: userA, title: "A taggable", occursOn: "2026-03-01" })
+      .returning({ id: taskOccurrence.id });
+    const [tb] = await dbAdmin
+      .insert(taskOccurrence)
+      .values({ userId: userB, title: "B taggable", occursOn: "2026-03-01" })
+      .returning({ id: taskOccurrence.id });
+
+    taskOfAForTags = ta.id;
+    taskOfBForTags = tb.id;
+
+    await dbAdmin.insert(occurrenceTags).values({
+      userId: userA,
+      occurrenceId: taskOfAForTags,
+      tagId: tagOfA,
+    });
+  });
+
+  it("returns exactly the caller's own tags", async () => {
+    const rows = await withUser({ sub: userA, email: EMAIL_A }, (tx) =>
+      tx.select().from(tags),
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(tagOfA);
+  });
+
+  it("cannot see another user's tag, even asked for by primary key", async () => {
+    const rows = await withUser({ sub: userB, email: EMAIL_B }, (tx) =>
+      tx.select().from(tags).where(eq(tags.id, tagOfA)),
+    );
+    expect(rows).toHaveLength(0);
+  });
+
+  /** CRITERION 12 — all three tables, one admin session, zero rows. */
+  it("an ADMIN session reading tags or either join table returns ZERO rows", async () => {
+    const [seenTags, seenOccurrenceLinks, seenSeriesLinks] = await Promise.all([
+      withUser({ sub: adminUser, email: EMAIL_ADMIN }, (tx) =>
+        tx.select().from(tags),
+      ),
+      withUser({ sub: adminUser, email: EMAIL_ADMIN }, (tx) =>
+        tx.select().from(occurrenceTags),
+      ),
+      withUser({ sub: adminUser, email: EMAIL_ADMIN }, (tx) =>
+        tx.select().from(seriesTags),
+      ),
+    ]);
+
+    expect(seenTags).toHaveLength(0);
+    expect(seenOccurrenceLinks).toHaveLength(0);
+    expect(seenSeriesLinks).toHaveLength(0);
+  });
+
+  it("cannot see another user's tag links", async () => {
+    const rows = await withUser({ sub: userB, email: EMAIL_B }, (tx) =>
+      tx.select().from(occurrenceTags),
+    );
+    expect(rows).toHaveLength(0);
+  });
+
+  it("dbAdmin still sees every tag — the escalation path works", async () => {
+    const ids = (await dbAdmin.select().from(tags)).map((r) => r.id);
+    expect(ids).toEqual(expect.arrayContaining([tagOfA, tagOfB]));
+  });
+
+  it("cannot create a tag owned by somebody else", async () => {
+    const attempt = await withUser({ sub: userB, email: EMAIL_B }, (tx) =>
+      tx.insert(tags).values({ userId: userA, name: "planted" }),
+    ).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+
+    expect(attempt).not.toBeNull();
+  });
+
+  it("a write aimed at someone else's tag changes nothing", async () => {
+    await withUser({ sub: userB, email: EMAIL_B }, (tx) =>
+      tx.update(tags).set({ name: "hacked" }).where(eq(tags.id, tagOfA)),
+    );
+
+    const [row] = await dbAdmin.select().from(tags).where(eq(tags.id, tagOfA));
+    expect(row.name).toBe("A private label");
+  });
+
+  it("a delete aimed at someone else's tag removes nothing", async () => {
+    await withUser({ sub: userB, email: EMAIL_B }, (tx) =>
+      tx.delete(tags).where(eq(tags.id, tagOfA)),
+    );
+
+    const rows = await dbAdmin.select().from(tags).where(eq(tags.id, tagOfA));
+    expect(rows).toHaveLength(1);
+  });
+
+  /**
+   * ===========================================================================
+   * CRITERION 13 — THE ONE THE COMPOSITE FOREIGN KEYS EXIST FOR
+   * ===========================================================================
+   *
+   * A foreign key check runs as a system-internal read and does **not** consult
+   * row level security — it can see rows the caller cannot. So with
+   * `occurrence_id references task_occurrence(id)` and
+   * `tag_id references tags(id)` as separate keys, this insert would succeed:
+   * the policy is satisfied (`user_id = auth.uid()`), both keys resolve, and a
+   * row lands in another person's data.
+   *
+   * Referencing `(id, user_id)` on both parents is what makes it impossible, and
+   * this is the assertion that would catch anyone "simplifying" those keys back.
+   */
+  it("cannot attach the caller's own tag to somebody else's task", async () => {
+    const attempt = await withUser({ sub: userA, email: EMAIL_A }, (tx) =>
+      tx.insert(occurrenceTags).values({
+        userId: userA,
+        occurrenceId: taskOfBForTags,
+        tagId: tagOfA,
+      }),
+    ).then(
+      () => null,
+      (e: unknown) => e as Error & { cause?: { message?: string } },
+    );
+
+    expect(attempt).not.toBeNull();
+    // Refused by the foreign key, not by a policy — which is the point.
+    expect(attempt!.cause?.message ?? attempt!.message).toMatch(
+      /occurrence_tags_occurrence_fk|foreign key/i,
+    );
+
+    const rows = await dbAdmin
+      .select()
+      .from(occurrenceTags)
+      .where(eq(occurrenceTags.occurrenceId, taskOfBForTags));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("cannot attach somebody else's tag to the caller's own task", async () => {
+    const attempt = await withUser({ sub: userA, email: EMAIL_A }, (tx) =>
+      tx.insert(occurrenceTags).values({
+        userId: userA,
+        occurrenceId: taskOfAForTags,
+        tagId: tagOfB,
+      }),
+    ).then(
+      () => null,
+      (e: unknown) => e as Error & { cause?: { message?: string } },
+    );
+
+    expect(attempt).not.toBeNull();
+    expect(attempt!.cause?.message ?? attempt!.message).toMatch(
+      /occurrence_tags_tag_fk|foreign key/i,
+    );
+  });
+
+  it("cannot forge a link row claiming to belong to somebody else", async () => {
+    // The insert policy catches this one before the FK does — belt and braces.
+    const attempt = await withUser({ sub: userA, email: EMAIL_A }, (tx) =>
+      tx.insert(occurrenceTags).values({
+        userId: userB,
+        occurrenceId: taskOfBForTags,
+        tagId: tagOfB,
+      }),
+    ).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+
+    expect(attempt).not.toBeNull();
+  });
+
+  it("an authenticated session cannot TRUNCATE any of the three", async () => {
+    for (const table of ["tags", "series_tags", "occurrence_tags"]) {
+      const attempt = await withUser({ sub: userA, email: EMAIL_A }, (tx) =>
+        tx.execute(sql.raw(`truncate table public.${table} cascade`)),
+      ).then(
+        () => null,
+        (e: unknown) => e as Error & { cause?: { message?: string } },
+      );
+
+      expect(attempt, `${table} should refuse TRUNCATE`).not.toBeNull();
+      expect(attempt!.cause?.message ?? attempt!.message).toMatch(
+        /permission denied/i,
+      );
+    }
+  });
+
+  it("an anonymous session cannot read any of the three", async () => {
+    for (const table of ["tags", "series_tags", "occurrence_tags"]) {
+      const attempt = await dbAdmin
+        .execute(
+          sql.raw(
+            `set local role anon; select count(*) from public.${table}`,
+          ),
+        )
+        .then(
+          () => null,
+          (e: unknown) => e as Error & { cause?: { message?: string } },
+        );
+
+      expect(attempt, `${table} should refuse anon`).not.toBeNull();
+      expect(attempt!.cause?.message ?? attempt!.message).toMatch(
+        /permission denied/i,
+      );
+    }
+  });
+
+  /**
+   * Criterion 3: deleting a tag detaches it everywhere and deletes no task. The
+   * cascade runs from `tags` to the link row and stops there.
+   */
+  it("deleting a tag removes its links and no task", async () => {
+    const [doomed] = await dbAdmin
+      .insert(tags)
+      .values({ userId: userA, name: "temporary" })
+      .returning({ id: tags.id });
+
+    await dbAdmin.insert(occurrenceTags).values({
+      userId: userA,
+      occurrenceId: taskOfAForTags,
+      tagId: doomed.id,
+    });
+
+    await withUser({ sub: userA, email: EMAIL_A }, (tx) =>
+      tx.delete(tags).where(eq(tags.id, doomed.id)),
+    );
+
+    const links = await dbAdmin
+      .select()
+      .from(occurrenceTags)
+      .where(eq(occurrenceTags.tagId, doomed.id));
+    expect(links).toHaveLength(0);
+
+    const task = await dbAdmin
+      .select()
+      .from(taskOccurrence)
+      .where(eq(taskOccurrence.id, taskOfAForTags));
+    expect(task).toHaveLength(1);
+  });
+
+  /** Criteria 1 and 2 — one "work" per person, and two people may each have one. */
+  it("enforces case-insensitive uniqueness per user, and only per user", async () => {
+    const duplicate = await withUser({ sub: userA, email: EMAIL_A }, (tx) =>
+      tx.insert(tags).values({ userId: userA, name: "A PRIVATE LABEL" }),
+    ).then(
+      () => null,
+      (e: unknown) => e as Error & { cause?: { message?: string } },
+    );
+
+    expect(duplicate).not.toBeNull();
+    expect(duplicate!.cause?.message ?? duplicate!.message).toMatch(
+      /tags_user_name_uniq|duplicate key/i,
+    );
+
+    // The same spelling is fine for a different person.
+    await expect(
+      withUser({ sub: userB, email: EMAIL_B }, (tx) =>
+        tx.insert(tags).values({ userId: userB, name: "a private label" }),
+      ),
+    ).resolves.toBeDefined();
   });
 });

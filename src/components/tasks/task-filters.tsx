@@ -191,10 +191,15 @@ export function TaskFiltersBar({ value, onChange }: TaskFiltersBarProps) {
             {tags.map((tag) => {
               const checked = (value.tagIds ?? []).includes(tag.id);
               return (
-                <label key={tag.id} className="cursor-pointer">
+                <label
+                  key={tag.id}
+                  className="relative inline-flex cursor-pointer"
+                >
                   <input
                     type="checkbox"
-                    className="peer sr-only"
+                    // See the note in `tag-picker.tsx`: an `sr-only` input is
+                    // obscured by the chip drawn beside it.
+                    className="peer absolute inset-0 z-10 cursor-pointer opacity-0"
                     checked={checked}
                     // Distinct from the picker's plain `<tag name>`: a page can
                     // show both, and two controls sharing an accessible name is

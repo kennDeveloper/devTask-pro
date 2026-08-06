@@ -73,10 +73,19 @@ export function TagPicker({
           {tags.map((tag) => {
             const checked = value.includes(tag.id);
             return (
-              <label key={tag.id} className="cursor-pointer">
+              <label key={tag.id} className="relative inline-flex cursor-pointer">
                 <input
                   type="checkbox"
-                  className="peer sr-only"
+                  // `absolute inset-0 opacity-0` rather than `sr-only`. An
+                  // `sr-only` input is clipped to a 1px box at the element's
+                  // origin, and the visible chip painted next to it then
+                  // *intercepts every click* — the label forwards it, so a human
+                  // never notices, but Playwright refuses to click an obscured
+                  // control and any automation would have to `force` its way
+                  // past. Covering the label with a transparent input makes the
+                  // whole chip a real hit area and keeps it in the
+                  // accessibility tree.
+                  className="peer absolute inset-0 z-10 cursor-pointer opacity-0"
                   name={`${id}-${tag.id}`}
                   checked={checked}
                   disabled={disabled}
