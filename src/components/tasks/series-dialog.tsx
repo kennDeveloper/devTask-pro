@@ -35,6 +35,8 @@ import {
   type SeriesFormErrors,
   type SeriesFormValues,
 } from "./series-form";
+import { TagPicker } from "@/components/tags/tag-picker";
+
 import { useSeriesActions } from "./use-series-actions";
 import { WeekdayPicker } from "./weekday-picker";
 
@@ -103,6 +105,10 @@ export function SeriesDialog({
    * it takes two deliberate clicks rather than a toast that arrives afterwards.
    */
   const [armedForDelete, setArmedForDelete] = React.useState(false);
+  /** The series' **template** tags — copied onto each occurrence as it materialises. */
+  const [tagIds, setTagIds] = React.useState<string[]>(
+    () => series?.tags.map((tag) => tag.id) ?? [],
+  );
 
   const saving = series ? update.isPending : create.isPending;
   const mutationError = series ? update.error : create.error;
@@ -131,7 +137,7 @@ export function SeriesDialog({
         return;
       }
       setErrors({});
-      update.mutate(result.data, { onSuccess: onClose });
+      update.mutate({ ...result.data, tagIds }, { onSuccess: onClose });
       return;
     }
 
@@ -141,7 +147,7 @@ export function SeriesDialog({
       return;
     }
     setErrors({});
-    create.mutate(result.data, { onSuccess: onClose });
+    create.mutate({ ...result.data, tagIds }, { onSuccess: onClose });
   }
 
   function handleDelete() {
@@ -478,6 +484,13 @@ export function SeriesDialog({
             </Field>
           )}
         </div>
+
+        <TagPicker
+          id={`${fieldId}-tags`}
+          value={tagIds}
+          onChange={setTagIds}
+          legend="Tags for every occurrence"
+        />
 
         {/* The rule in words, live. `role="status"` so a screen reader hears it
             change as the controls move, without an aria-live of our own. */}

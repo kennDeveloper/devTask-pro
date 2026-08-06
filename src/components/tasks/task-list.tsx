@@ -22,9 +22,12 @@ import {
   TaskTableEmpty,
   type EmptyHeadingLevel,
 } from "./task-empty";
+import { TaskFiltersBar } from "./task-filters";
 import { taskColumns } from "./task-presentation";
 import { TaskRow } from "./task-row";
 import { TaskCardListSkeleton, TaskTableSkeleton } from "./task-skeleton";
+
+import type { TaskFilters } from "@/lib/tasks/filters";
 
 import type { Task, TaskClock } from "./types";
 
@@ -76,6 +79,8 @@ interface ViewConfig {
    * work into the past.
    */
   canCreate: boolean;
+  /** Whether this view offers the search-and-filter bar. */
+  showFilters: boolean;
   emptyTitle: string;
   emptyBody: string;
 }
@@ -85,6 +90,7 @@ const VIEWS: Record<TaskListView, ViewConfig> = {
     label: "Tasks for today",
     showDay: false,
     canCreate: true,
+    showFilters: false,
     emptyTitle: "Nothing on today's list",
     emptyBody:
       "Add the first thing you want to get done, and it will show up here.",
@@ -93,6 +99,7 @@ const VIEWS: Record<TaskListView, ViewConfig> = {
     label: "Overdue tasks",
     showDay: true,
     canCreate: false,
+    showFilters: false,
     // Deliberately calm. This group renders unconditionally above the day's list
     // on the screen the user opens every morning, and an empty overdue list is
     // good news — it must not read as a gap that needs filling.
@@ -104,6 +111,7 @@ const VIEWS: Record<TaskListView, ViewConfig> = {
     label: "All tasks",
     showDay: true,
     canCreate: true,
+    showFilters: true,
     emptyTitle: "No tasks yet",
     emptyBody:
       "Everything you add lands here, whatever day it belongs to and whatever state it is in.",
@@ -179,13 +187,16 @@ function DayTaskList({
   occursOn: string;
   headingLevel: EmptyHeadingLevel;
 }) {
-  const query = trpc.task.listForDay.useQuery({ occursOn });
+  const [filters, setFilters] = React.useState<TaskFilters>({});
+  const query = trpc.task.listForDay.useQuery({ occursOn, filters });
   return (
     <TaskListLayout
       view="day"
       clock={clock}
       query={query}
       headingLevel={headingLevel}
+      filters={filters}
+      onFiltersChange={setFilters}
     />
   );
 }
@@ -203,13 +214,16 @@ function OverdueTaskList({
   clock: TaskClock;
   headingLevel: EmptyHeadingLevel;
 }) {
-  const query = trpc.task.listOverdue.useQuery({});
+  const [filters, setFilters] = React.useState<TaskFilters>({});
+  const query = trpc.task.listOverdue.useQuery({ filters });
   return (
     <TaskListLayout
       view="overdue"
       clock={clock}
       query={query}
       headingLevel={headingLevel}
+      filters={filters}
+      onFiltersChange={setFilters}
     />
   );
 }
@@ -221,13 +235,16 @@ function AllTaskList({
   clock: TaskClock;
   headingLevel: EmptyHeadingLevel;
 }) {
-  const query = trpc.task.list.useQuery();
+  const [filters, setFilters] = React.useState<TaskFilters>({});
+  const query = trpc.task.list.useQuery({ filters });
   return (
     <TaskListLayout
       view="all"
       clock={clock}
       query={query}
       headingLevel={headingLevel}
+      filters={filters}
+      onFiltersChange={setFilters}
     />
   );
 }
@@ -238,6 +255,13 @@ export interface TaskListLayoutProps {
   query: TaskListQuery;
   /** See `TaskListProps.headingLevel`. Defaulted so tests can omit it. */
   headingLevel?: EmptyHeadingLevel;
+  /**
+   * The filter bar's state, owned by the view component above so it can be sent
+   * with the query. Absent means "do not offer filtering" — which is how
+   * `/today`'s two short lists stay uncluttered.
+   */
+  filters?: TaskFilters;
+  onFiltersChange?: (filters: TaskFilters) => void;
 }
 
 export function TaskListLayout({
@@ -245,6 +269,8 @@ export function TaskListLayout({
   clock,
   query,
   headingLevel = "h2",
+  filters,
+  onFiltersChange,
 }: TaskListLayoutProps) {
   const [editing, setEditing] = React.useState<Task | null>(null);
   /**
@@ -287,6 +313,13 @@ export function TaskListLayout({
 
   return (
     <div className="space-y-3">
+      {/* Only where the list spans days. `/today` is one calendar square and
+          `/overdue` is a bucket you clear, so a search box on either would be a
+          control looking for work to do. */}
+      {config.showFilters && filters && onFiltersChange && (
+        <TaskFiltersBar value={filters} onChange={onFiltersChange} />
+      )}
+
       {config.canCreate && (
         <div className="flex flex-wrap justify-end gap-2">
           {/* Two buttons, because they create two different things. A repeat

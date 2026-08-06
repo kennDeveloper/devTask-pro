@@ -35,14 +35,20 @@ import type { TaskStatus } from "@/lib/db/schema";
 export interface TaskFilters {
   /** Matched against the title, case-insensitively, as a substring. */
   search?: string;
-  /** Any of these statuses. Empty or absent means all of them. */
-  statuses?: readonly TaskStatus[];
+  /**
+   * Any of these statuses. Empty or absent means all of them.
+   *
+   * Mutable rather than `readonly` because this type also *is* the tRPC input —
+   * Zod produces mutable arrays, and one shared shape beats a second type that
+   * exists only to be spread into the first. Nothing here mutates it.
+   */
+  statuses?: TaskStatus[];
   /** Inclusive lower bound on `occurs_on`, as `YYYY-MM-DD`. */
   from?: string;
   /** Inclusive upper bound on `occurs_on`, as `YYYY-MM-DD`. */
   to?: string;
   /** Any of these tag ids. Empty or absent means "do not filter by tag". */
-  tagIds?: readonly string[];
+  tagIds?: string[];
 }
 
 /** The fields `matchesFilters` reads, and nothing else. */

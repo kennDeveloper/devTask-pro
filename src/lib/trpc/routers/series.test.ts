@@ -120,6 +120,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(seriesRepo.listActive).mockResolvedValue([]);
   vi.mocked(tagsRepo.setForSeries).mockResolvedValue(undefined);
+  // Phase 4: every series read resolves its template tags. None of the
+  // assertions in this file are about them.
+  vi.mocked(tagsRepo.tagsForSeries).mockResolvedValue([]);
 });
 
 describe("the procedure ladder", () => {

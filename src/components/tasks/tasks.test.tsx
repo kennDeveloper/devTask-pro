@@ -65,6 +65,8 @@ const api = vi.hoisted(() => {
     seriesCreate: stub(),
     seriesUpdate: stub(),
     seriesRemove: stub(),
+    /** What `tag.list` resolves to. The picker and the filter bar both read it. */
+    tagList: { data: [] as unknown[], isPending: false },
     /** What `series.get` resolves to. `undefined` data is "still loading". */
     seriesGet: {
       data: undefined as unknown,
@@ -95,6 +97,9 @@ vi.mock("@/lib/trpc/client", () => {
         create: { useMutation: (o?: MutationOptions) => bind(api.create, o) },
         update: { useMutation: (o?: MutationOptions) => bind(api.update, o) },
         remove: { useMutation: (o?: MutationOptions) => bind(api.remove, o) },
+      },
+      tag: {
+        list: { useQuery: () => api.tagList },
       },
       series: {
         get: { useQuery: () => api.seriesGet },
@@ -132,6 +137,8 @@ beforeEach(() => {
   }
   api.seriesGet.data = undefined;
   api.seriesGet.error = null;
+  api.tagList.data = [];
+  api.tagList.isPending = false;
 });
 
 const CLOCK: TaskClock = {
@@ -623,6 +630,7 @@ describe("a recurring occurrence in the list", () => {
         endsCount: null,
       },
       rrule: "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,TH",
+      tags: [],
       createdAt: "2026-08-01T00:00:00.000Z",
       updatedAt: "2026-08-01T00:00:00.000Z",
     };

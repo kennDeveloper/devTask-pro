@@ -7,6 +7,8 @@ import { Text } from "@/components/ui/text";
 import { isOverdue } from "@/lib/tasks/overdue";
 import { cn } from "@/lib/utils";
 
+import { TagChips } from "@/components/tags/tag-chips";
+
 import { ProgressControl } from "./progress-control";
 import { RepeatButton } from "./repeat-button";
 import { StatusControl } from "./status-control";
@@ -85,6 +87,7 @@ export function TaskCard({
               {task.description}
             </Text>
           )}
+          <TagChips title={task.title} tags={task.tags} className="mt-1.5 flex flex-wrap items-center gap-1" />
         </div>
         <Button
           variant="outline"
