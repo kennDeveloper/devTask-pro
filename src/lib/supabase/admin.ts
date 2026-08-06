@@ -1,7 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-import { authCallbackUrl } from "@/lib/auth/redirect";
-
 /**
  * THE SERVICE-ROLE AUTH CLIENT. Read this before using it.
  *
@@ -62,13 +60,58 @@ export const BAN_DURATION = "876000h";
 export const UNBAN_DURATION = "none";
 
 /**
- * Where a recovery link lands: the PKCE callback, which exchanges the code for a
- * session and then forwards to /reset-password with that session in place.
- * Without the `next` hop the user arrives signed in at their home screen with no
- * way to set a password. Identical to what the /forgot-password page requests,
- * so both routes are one flow with one destination.
+ * Where a recovery link lands.
+ *
+ * ============================================================================
+ * STRAIGHT TO /reset-password — NOT THROUGH /auth/callback. THIS IS FORCED.
+ * ============================================================================
+ *
+ * `/forgot-password` aims its link at `/auth/callback`, because that page calls
+ * `resetPasswordForEmail` **from the browser**, where supabase-js is in PKCE
+ * mode: it mints a code challenge, stores the verifier in that browser's
+ * storage, and GoTrue emails a link carrying `?code=`. The callback route
+ * exchanges the code for a session.
+ *
+ * An admin-triggered reset cannot work that way, and no configuration makes it.
+ * PKCE requires the client that *initiated* the flow to be the client that
+ * *redeems* it — the verifier never leaves that browser. Here the initiator is
+ * this server and the redeemer is the account holder's browser, which has no
+ * verifier and never will. So GoTrue issues an **implicit-flow** link instead,
+ * carrying the session in the URL *fragment*:
+ *
+ *     /auth/callback#access_token=…&type=recovery
+ *
+ * A fragment is never sent to the server. The callback route handler therefore
+ * sees no `?code=`, concludes the link is spent, and bounces the user to
+ * `/sign-in?error=auth` — with a perfectly good session sitting in a fragment
+ * nobody read. That is exactly what happened the first time this was written.
+ *
+ * Pointing at `/reset-password` directly fixes it, because that page is a client
+ * component holding a `createBrowserClient`, whose `detectSessionInUrl` default
+ * parses the fragment and establishes the session before the page asks
+ * `getSession()`. `/reset-password` is in `ALWAYS_ALLOWED_PREFIXES`, so the
+ * proxy lets the request through while the caller still looks signed out.
  */
 export const RECOVERY_REDIRECT_PATH = "/reset-password";
+
+/**
+ * The absolute URL for that path.
+ *
+ * Built here rather than through `authCallbackUrl()` because this flow
+ * deliberately does not go through the callback. `NEXT_PUBLIC_SITE_URL` is the
+ * same variable that helper prefers, so both land on the same origin — and it is
+ * required rather than optional here: there is no `window.location` to fall back
+ * to on a server, and a relative `redirectTo` would be rejected by GoTrue.
+ */
+function recoveryRedirectUrl(): string {
+  const base = process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "");
+  if (!base) {
+    throw new Error(
+      "NEXT_PUBLIC_SITE_URL is required to send a password-reset email",
+    );
+  }
+  return `${base}${RECOVERY_REDIRECT_PATH}`;
+}
 
 let cached: SupabaseClient | null = null;
 
@@ -133,7 +176,7 @@ export async function setAccountBanned(
  */
 export async function sendRecoveryEmail(email: string): Promise<void> {
   const { error } = await adminAuthClient().auth.resetPasswordForEmail(email, {
-    redirectTo: authCallbackUrl(RECOVERY_REDIRECT_PATH),
+    redirectTo: recoveryRedirectUrl(),
   });
 
   if (error) {

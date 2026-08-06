@@ -127,16 +127,34 @@ describe("setAccountBanned", () => {
 });
 
 describe("sendRecoveryEmail", () => {
-  it("aims the link at the PKCE callback with a next hop to /reset-password", async () => {
+  /**
+   * Straight to /reset-password, **not** through /auth/callback — and that is
+   * forced rather than chosen. A server-initiated reset cannot be PKCE: the
+   * verifier would have to travel from this process to the account holder's
+   * browser. So GoTrue emails an implicit-flow link carrying the session in the
+   * URL *fragment*, a fragment never reaches the server, and the callback route
+   * handler would see no `?code=`, conclude the link was spent, and bounce the
+   * user to `/sign-in?error=auth`. That is exactly what happened before this
+   * assertion existed.
+   */
+  it("aims the link straight at /reset-password, bypassing the PKCE callback", async () => {
     await sendRecoveryEmail("member@example.com");
 
     const [email, options] = resetPasswordForEmail.mock.calls[0];
     expect(email).toBe("member@example.com");
     expect(options.redirectTo).toBe(
-      `http://localhost:3002/auth/callback?next=${encodeURIComponent(
-        RECOVERY_REDIRECT_PATH,
-      )}`,
+      `http://localhost:3002${RECOVERY_REDIRECT_PATH}`,
     );
+    expect(options.redirectTo).not.toContain("/auth/callback");
+  });
+
+  it("refuses to send rather than emailing a relative redirect", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SITE_URL", "");
+
+    await expect(sendRecoveryEmail("member@example.com")).rejects.toThrow(
+      /NEXT_PUBLIC_SITE_URL/,
+    );
+    expect(resetPasswordForEmail).not.toHaveBeenCalled();
   });
 
   it("surfaces a rate limit rather than reporting a send that never happened", async () => {
