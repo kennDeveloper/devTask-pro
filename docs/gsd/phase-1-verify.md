@@ -85,15 +85,33 @@ ticked, so phase 2 does not inherit them as already-proven.
 - **No `tailwind.config.*`** — Tailwind v4 stays CSS-first.
 - Mobile: no page scrolls horizontally at iPhone 14 width (asserted in e2e).
 
-## Ship blocker
-
-**No git remote exists and `gh` is not authenticated.** Nine tasks' worth of work is on
-`phase-1-foundation` with no `origin`, so `gsd-ship` cannot open a PR. Creating the GitHub repo is
-an outward-facing action and a Ship-stage decision the plan deliberately left to a human — it is
-not blocked on anything technical.
-
 ## Verdict
 
 **Phase 1 is verified.** Every gate green with evidence, every phase-1 criterion observed to hold,
-criteria 6/18/19 recorded as open with reasons rather than silently ticked. Ready for Ship once the
-remote question is answered.
+criteria 6/18/19 recorded as open with reasons rather than silently ticked.
+
+## Shipped
+
+**PR: <https://github.com/kennDeveloper/devTask-pro/pull/1>** — `phase-1-foundation` → `main`,
+10 commits, open and unmerged. Gates re-run green as a Ship pre-flight immediately before the push,
+not trusted from the run above.
+
+The repository was empty at ship time, so `main` was created at the scaffold commit `aa7cc10` to
+give the PR a real base. That leaves the scaffold on `main` un-reviewed — worth a glance before
+merge, because nothing downstream will review it.
+
+`gh` lives in a per-account config dir on this machine: `usegitlightningventures` exports
+`GH_CONFIG_DIR="$HOME/.config/gh-lightningventures"`. Without it `gh auth status` reads the default
+`~/.config/gh`, which does not exist, and reports "not logged into any GitHub hosts" on an account
+that is in fact authenticated.
+
+## Carry-forward to phase 2
+
+1. Re-point `tests/integration/rls-boundary.test.ts` at `task_occurrence` and close **criterion 6**
+   there. The two-user + admin harness already exists; only the table changes.
+2. **Criteria 18 and 19 are still open** — they need deadline logic and the today list, which phase
+   2 introduces. Do not treat them as inherited.
+3. `pnpm test:e2e` needs the **WebKit** binary (`pnpm exec playwright install webkit`); the `mobile`
+   project is `devices["iPhone 14"]`. CI will need that step too.
+4. New auth-adjacent forms should fill via `e2e/helpers/forms.ts`, not inline `fill()` calls — see
+   the hydration race above.
