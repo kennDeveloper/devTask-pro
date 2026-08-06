@@ -263,6 +263,31 @@ yet — creating it is a Ship-stage decision, and `gsd-ship` will need one befor
 **Rollback:** every task is one atomic commit on `phase-1-foundation`. Nothing is deployed and no
 cloud resource is created, so rollback is `git reset` — the reason for choosing local-only.
 
+## Carry-forward — things phase 2 must not rediscover
+
+Learned during execution, not visible at plan time.
+
+1. **Every new table needs explicit `GRANT`s in its own migration.** Supabase CLI 2.111 no longer
+   auto-exposes new `public` entities (`auto_expose_new_tables` defaults off, and the field is
+   removed entirely on 2026-10-30). Without a grant, correct RLS policies fail with *permission
+   denied* rather than returning zero rows — which reads like a broken policy and isn't one.
+   Follow `0003`: `grant select, insert, update, delete on <table> to authenticated;`
+   `grant all on <table> to service_role;` `anon` gets nothing.
+2. **Re-point `tests/integration/rls-boundary.test.ts` at `task_occurrence`** and close brief
+   criterion 6 there. The two-user + admin harness already exists; only the table changes.
+3. **Drizzle wraps driver errors.** The Postgres message is on `err.cause.message`, not
+   `err.message`. Asserting on the wrapper passes for *any* failed query, so a guard test written
+   that way proves nothing.
+4. **`auth.rate_limit.email_sent` is raised to 200/hour** in `config.toml`, scoped to the local
+   stack. The default of 2/hour caps an e2e run at two signups once confirmations are on. Do not
+   copy that value to cloud.
+5. **`[inbucket]` is now `[local_smtp]`** in `config.toml`; the kickoff template's section name no
+   longer exists. Port 54424 and `supabase status`'s `INBUCKET_URL` are unchanged.
+6. **ESLint stays on 9.x.** ESLint 10 breaks `eslint-plugin-react`
+   (`contextOrFilename.getFilename is not a function`), which `eslint-config-next` depends on.
+7. **pnpm 11 ignores `pnpm.onlyBuiltDependencies` in `package.json`** — it is `allowBuilds` in
+   `pnpm-workspace.yaml`. Without it esbuild never builds and vitest cannot run.
+
 ## Deferred to later phases
 
 - Task tables, the recurrence engine, tags, search, reminders (phases 2–4, 6).
