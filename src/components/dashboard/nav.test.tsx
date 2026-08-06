@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { ShieldCheck } from "lucide-react";
 
 import { Sidebar } from "./Sidebar";
 import { NAV, isNavItemActive } from "./nav-config";
 import { ShellProvider } from "./shell-context";
 import { SidebarProvider } from "./sidebar-context";
-import type { ShellUser } from "./types";
+import type { NavItem, ShellUser } from "./types";
 
 // The sidebar and the breadcrumbs both ask where they are. There is no App
 // Router in a jsdom render, so the hook is stubbed rather than the whole
@@ -38,6 +39,14 @@ function renderSidebar(at = "/today") {
   );
 }
 
+/** Not in `NAV` — nothing is `comingSoon` any more. See the test that uses it. */
+const UNBUILT: NavItem = {
+  href: "/admin",
+  label: "Admin",
+  icon: ShieldCheck,
+  comingSoon: true,
+};
+
 describe("nav config", () => {
   it("offers Today, Tasks, Overdue and Settings, in that order", () => {
     const labels = NAV.flatMap((group) =>
@@ -46,9 +55,28 @@ describe("nav config", () => {
     expect(labels).toEqual(["Today", "Tasks", "Overdue", "Settings"]);
   });
 
+  /**
+   * The inverse of what this file asserted through phase 1. Both routes now
+   * exist, so the `comingSoon` flag is off and they highlight like any other
+   * destination — which is the observable consequence of the flag, and the part
+   * that would silently regress if someone put it back.
+   */
+  it.each([
+    ["Tasks", "/tasks"],
+    ["Overdue", "/overdue"],
+  ])("marks %s active now that it is a real route", (label, path) => {
+    const item = NAV[0].items.find((entry) => entry.label === label)!;
+    expect(item.comingSoon).toBeUndefined();
+    expect(isNavItemActive(path, item)).toBe(true);
+  });
+
+  /**
+   * Asserted against a synthetic item because no *real* one is unbuilt today.
+   * The rule is kept — and kept covered — for the next destination that lands
+   * in the nav before it lands on disk (phase 5's admin tier is the candidate).
+   */
   it("never marks an unbuilt destination active", () => {
-    const tasks = NAV[0].items.find((item) => item.label === "Tasks")!;
-    expect(isNavItemActive("/tasks", tasks)).toBe(false);
+    expect(isNavItemActive("/admin", UNBUILT)).toBe(false);
   });
 
   it("matches nested paths under a built destination", () => {
@@ -59,37 +87,33 @@ describe("nav config", () => {
   });
 });
 
+/** Every destination, flattened — the table both Sidebar link tests run over. */
+const DESTINATIONS = NAV.flatMap((group) => group.items).map(
+  (item) => [item.label, item.href] as const,
+);
+
 describe("<Sidebar>", () => {
-  it("links the destinations that exist", () => {
+  it.each(DESTINATIONS)("links %s to %s", (label, href) => {
     renderSidebar();
 
-    expect(screen.getByRole("link", { name: "Today" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: label })).toHaveAttribute(
       "href",
-      "/today",
-    );
-    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute(
-      "href",
-      "/settings",
+      href,
     );
   });
 
   /**
-   * The point of the whole exercise: /tasks and /overdue do not exist until
-   * phase 2, so they must be visible and inert. A link here would hand out a
-   * 404; omitting them would hide where the product is going.
+   * The counterpart to the phase-1 test that required /tasks and /overdue to be
+   * inert. Every destination is now a real route, so an `aria-disabled` row
+   * anywhere in the nav means a flag was left on and a page is unreachable from
+   * the sidebar that ships to link to it.
    */
-  it.each(["Tasks", "Overdue"])(
-    "renders %s as a disabled row, not a link",
-    (label) => {
-      renderSidebar();
+  it("leaves no inert rows behind", () => {
+    const { container } = renderSidebar();
 
-      expect(screen.queryByRole("link", { name: new RegExp(label) })).toBeNull();
-
-      const row = screen.getByText(label).closest("[aria-disabled='true']");
-      expect(row).not.toBeNull();
-      expect(row).toHaveTextContent("Soon");
-    },
-  );
+    expect(container.querySelector("[aria-disabled='true']")).toBeNull();
+    expect(screen.queryByText("Soon")).toBeNull();
+  });
 
   it("marks the current route with aria-current", () => {
     renderSidebar("/settings");

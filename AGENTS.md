@@ -52,7 +52,10 @@ innocent as "show open task counts" to the admin UI requires `dbAdmin` and would
 the policies exist to give. If you want that, change the decision in `docs/gsd/devtask-pro-v1.md`
 first — do not route around it in code.
 
-`tests/integration/rls-boundary.test.ts` is the proof, not a formality. Keep it passing.
+`tests/integration/rls-boundary.test.ts` is the proof, not a formality. Keep it passing. Its
+`task_occurrence` block is criterion 6 — an admin session reading real task data and getting zero
+rows. When a phase adds a table holding user data, add a block there too; the two-user-plus-admin
+harness is already built.
 
 ## Database
 
@@ -63,10 +66,26 @@ first — do not route around it in code.
 - **Every new table needs explicit `GRANT`s in its own migration.** Supabase no longer auto-exposes
   new `public` entities. Without a grant, correct policies fail with *permission denied* rather than
   returning zero rows — which reads like a broken policy and is not one. Follow `0003`.
+- **A new table is not created with an empty ACL — check what it starts with.** `postgres`, the role
+  migrations run as, used to carry a default privilege granting `Dxtm` to `anon` and `authenticated`
+  on every new `public` table. `D` is **TRUNCATE, which does not consult RLS**: any signed-in account
+  could empty a table outright with no policy objecting. `0004` revokes that default, so tables
+  created after it start clean — but if you ever see a client role holding a privilege no migration
+  granted, that is why, and it is a security bug rather than noise.
+- **All four policies, or say why not.** `profiles` has only `select`/`update` because a trigger
+  creates its rows and auth cascades deletes. A user-owned table needs `insert` and `delete` too, and
+  both `insert` and `update` need a `WITH CHECK` — `USING` alone lets a caller create a row owned by
+  someone else, or hand their own row away by re-pointing `user_id`. See `0004`.
 - **Privilege columns are guarded by a trigger, not a policy.** A `WITH CHECK` that queries the same
-  table recurses. See the long comment in `0003_rls_policies.sql`.
+  table recurses. See the long comment in `0003_rls_policies.sql`. Do **not** copy that guard onto a
+  table with no privileged column — `task_occurrence` deliberately has none.
+- **Derived columns are maintained by triggers, not by callers.** `updated_at` (`touch_updated_at`,
+  0002) and `completed_at` (`sync_task_completed_at`, 0004) are set by the database. Application code
+  that writes them is fighting the trigger.
 - One repo module per table under `src/lib/db/repos/`; routes and lib code call the repo, never
-  Drizzle directly.
+  Drizzle directly. `repos/occurrences.ts` is the reference: every function takes claims and opens
+  its own `withUser()`, and single-row writes filter on **both** the id and `user_id` so the
+  statement is correct on its own terms rather than only because a policy is in place.
 
 ## tRPC
 
@@ -108,7 +127,60 @@ expires. The extra round-trip is the accepted cost; do not optimise it away.
   and `.dark`.
 - Tailwind v4 is CSS-first — there is no `tailwind.config.js` and you should not create one. Note
   that tokens declared **only** in `@theme inline` are never emitted as real CSS variables, so
-  hand-written `var(--token)` outside a utility resolves to nothing.
+  hand-written `var(--token)` outside a utility resolves to nothing. `::backdrop` is a further trap:
+  it has no parent in the element tree, engines disagree about whether it inherits, and where it does
+  not, `var()` silently resolves to transparent. `globals.css` uses literals there on purpose.
+
+## Time, and the one rule about it
+
+**Nothing under `src/components/**` may decide what day it is.** The account holder's day is resolved
+on the server from `profiles.timezone` — `currentUserClock()` in `src/lib/time/current-clock.ts` is
+the single call site — and handed down as a plain `YYYY-MM-DD` string. A `new Date()` in the browser
+cannot agree with the server by construction, and the symptom is a flash of the wrong day just after
+hydration. This is acceptance criterion 19, and it is greppable: one legitimate clock read, and
+anything else computing a day or a lateness is a bug.
+
+- `occurs_on` is a bare `date`, an intention about a calendar square. `deadline_at` is `timestamptz`,
+  an instant — which is what makes `deadline_at < now()` correct in any server timezone.
+- **Overdue is derived, never stored**: `deadline_at < now() and status <> 'done'`. Marking a task
+  done or moving its deadline takes it out of the bucket on the next read, with no job to run.
+  `overdueCondition()` in `repos/occurrences.ts` and `isOverdue()` in `lib/tasks/overdue.ts` are the
+  SQL and TypeScript halves of one definition — change them together.
+- **Validate zones through `canonicalTimeZone()`**, never `Intl.supportedValuesOf(...).has(value)`.
+  That list does not enumerate the same spellings on every engine — this Node lists `Asia/Calcutta`
+  and omits `Asia/Kolkata`, canonicalising browsers do the reverse — so two independent membership
+  tests disagree across the wire and reject real users.
+
+## End-to-end tests
+
+Three rules, each of which has already cost a debugging session.
+
+- **Never write a bare `fill()` in a spec — go through `fillForm()`** (`e2e/helpers/forms.ts`). A
+  controlled input filled between HTML arriving and React hydrating takes the raw DOM value and
+  dispatches an event nobody is listening to yet; component state stays empty and the first
+  controlled render wipes the field. The symptom is not "the field is empty" but a timeout waiting
+  for a navigation, with the form's own validation error in the snapshot. `fillForm` fills every
+  field and then `toPass`-asserts the values survived, so it re-fills once hydration lands. It is
+  deterministic on the `mobile` project (WebKit) and a coin-flip on `chromium`, which is why a spec
+  that passes locally is not evidence.
+- **Select by role, never by CSS or test id.** Every list renders **both** presentations at once — a
+  `<Table>` inside `hidden md:block` and a card stack inside `md:hidden` — so each task's controls
+  exist twice in the DOM with exactly one copy displayed. Playwright's role engine ignores what the
+  accessibility tree ignores, so `getByRole` resolves to whichever presentation is visible and one
+  line covers both projects. A CSS selector matches both copies and fails strict mode on one of them.
+- **That only works because rows and cards name their controls identically** — `Edit <title>`,
+  `Status of <title>`, `Progress of <title>`. `task-row.tsx` and `task-card.tsx` must stay in step;
+  renaming in one is a silent e2e break in the other.
+
+Seeding through the service role (`e2e/helpers/tasks.ts`) is for arrangements the UI is deliberately
+awkward at — a deadline a known number of minutes in the *past* — not a shortcut around the app. The
+behaviour is still asserted through the browser, and that a user cannot write somebody else's row is
+proven in `tests/integration/rls-boundary.test.ts`, not here.
+
+**Timeouts belong in `playwright.config.ts`, not in a spec.** The suite runs `fullyParallel` against
+one `next dev`, which compiles each route the first time anybody asks for it, so a spec that passes
+alone can time out in the full run on a route it does not even touch. The budgets there are sized for
+that; before treating a timeout as a regression, run the spec on its own and see whether it passes.
 
 ## Commands and gates
 

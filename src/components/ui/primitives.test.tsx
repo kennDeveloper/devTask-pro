@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Card,
   CardContent,
@@ -182,5 +184,66 @@ describe("ui primitives", () => {
     render(<Logo />);
     expect(screen.getByRole("img", { name: /logo/i })).toBeInTheDocument();
     expect(screen.getByText("DevTask Pro")).toBeInTheDocument();
+  });
+
+  it("renders a Textarea", () => {
+    render(<Textarea aria-label="Notes" defaultValue="hello" />);
+    expect(screen.getByLabelText("Notes")).toHaveValue("hello");
+  });
+});
+
+/**
+ * Dialog wraps the native `<dialog>` element, which jsdom does not implement —
+ * `tests/setup.ts` shims `showModal`/`close`. What that shim can prove is the
+ * wiring this component owns: that `open` is reflected imperatively, that the
+ * element's own `close` event is what drives `onClose`, and that the accessible
+ * name is attached. What it cannot prove — focus trapping, the top layer, an
+ * inert background — is exactly what the native element was chosen for, and is
+ * left to `e2e/`.
+ */
+describe("Dialog", () => {
+  function Harness({ onClose = () => {} }: { onClose?: () => void }) {
+    return (
+      <Dialog open title="Edit task" description="Change the details" onClose={onClose}>
+        <p>Body</p>
+      </Dialog>
+    );
+  }
+
+  it("opens when `open` is true and exposes its title as the accessible name", () => {
+    render(<Harness />);
+    const dialog = screen.getByRole("dialog", { name: "Edit task" });
+    expect(dialog).toBeInTheDocument();
+    expect(dialog).toHaveAttribute("open");
+  });
+
+  it("stays closed when `open` is false", () => {
+    render(
+      <Dialog open={false} title="Edit task" onClose={() => {}}>
+        <p>Body</p>
+      </Dialog>,
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("calls onClose from the element's own close event, which is what Escape fires", () => {
+    const onClose = vi.fn();
+    render(<Harness onClose={onClose} />);
+
+    // Escape does not pass through a React handler — the browser closes the
+    // element directly and fires `close`. Wiring onClose to the close button
+    // instead would leave the parent's state stale on Escape, so this asserts
+    // the element-event path specifically.
+    const dialog = screen.getByRole("dialog") as HTMLDialogElement;
+    dialog.close();
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("describes itself with the description when one is given", () => {
+    render(<Harness />);
+    expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
+      "Change the details",
+    );
   });
 });
