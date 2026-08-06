@@ -35,6 +35,27 @@ export type TaskCreateInput = inferRouterInputs<AppRouter>["task"]["create"];
 export type TaskUpdateInput = inferRouterInputs<AppRouter>["task"]["update"];
 
 /**
+ * One repeat rule, exactly as the browser receives it.
+ *
+ * Note what a `Series` is **not**: a task. It carries no status, no progress and
+ * no completion — the trackable unit is still a `Task`, and one is written the
+ * first time somebody touches a date the rule names. A row in a list is a `Task`
+ * whether or not a rule produced it, which is the "one read path, not two"
+ * decision the schema is built around.
+ *
+ * `rule` arrives as one nested object rather than ten sibling keys, matching the
+ * `seriesInput` schema: it is one value, and a form that could send half of it
+ * would be able to express a rule the columns cannot hold.
+ */
+export type Series = inferRouterOutputs<AppRouter>["series"]["list"][number];
+
+/** The payload `series.create` accepts. */
+export type SeriesCreateInput = inferRouterInputs<AppRouter>["series"]["create"];
+
+/** The payload `series.update` accepts — a replacement, not a patch. */
+export type SeriesUpdateInput = inferRouterInputs<AppRouter>["series"]["update"];
+
+/**
  * Everything time-related, resolved **once on the server** and handed down.
  *
  * This is acceptance criterion 19 expressed as a prop. No component under
