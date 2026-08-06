@@ -18,7 +18,8 @@
     "db:push": "supabase db push",
     "db:generate": "drizzle-kit generate",
     "db:studio": "drizzle-kit studio",
-    "admin:create": "tsx scripts/create-admin.ts"
+    "admin:create": "tsx scripts/create-admin.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",
@@ -51,6 +52,7 @@
     "@typescript-eslint/eslint-plugin": "^8.66.0",
     "@typescript-eslint/parser": "^8.66.0",
     "@vitejs/plugin-react": "^6.0.5",
+    "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
     "eslint": "^9.39.5",
     "eslint-config-next": "16.3.0",
