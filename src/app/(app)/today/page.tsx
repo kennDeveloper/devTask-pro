@@ -1,28 +1,5 @@
 import type { Metadata } from "next";
 
-// TODO(task-7): `src/components/tasks/task-list.tsx` is being written in
-// parallel and does not exist on disk yet, so this is expected to be the only
-// thing `pnpm typecheck` complains about. `src/components/tasks/types.ts` does
-// exist and publishes `TaskClock`, which is what these pages build and pass
-// down. The contract they were written against:
-//
-//   export function TaskList(props: {
-//     /** Which query to run: `task.listForDay` | `task.listOverdue` | `task.list`. */
-//     view: "day" | "overdue" | "all";
-//     /** Resolved server-side; see `src/lib/time/current-clock.ts`. */
-//     clock: TaskClock;
-//   }): React.ReactElement;
-//
-// It is a client component and owns everything below the heading: its own
-// query, its own skeleton, its own empty state, the `<Table>` / `md:hidden`
-// card pair, and — for `view="day"` and `view="all"` — its own "New task"
-// affordance. `view="overdue"` offers no create button: you do not file work
-// into the past.
-//
-// One requirement specific to this page: the overdue group renders
-// unconditionally above the day group, so `view="overdue"` needs a calm empty
-// state ("Nothing overdue") rather than a loud one. On the screen a user opens
-// every morning, an empty overdue list is good news, not a gap.
 import { TaskList } from "@/components/tasks/task-list";
 import type { TaskClock } from "@/components/tasks/types";
 import { Text } from "@/components/ui/text";

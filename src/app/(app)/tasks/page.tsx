@@ -1,9 +1,5 @@
 import type { Metadata } from "next";
 
-// TODO(task-7): `src/components/tasks/task-list.tsx` is written in parallel and
-// does not exist on disk yet. Same contract as `(app)/today/page.tsx` sets out
-// in full — `{ view: "day" | "overdue" | "all"; clock: TaskClock }` — here with
-// `view="all"`, which is `task.list`.
 import { TaskList } from "@/components/tasks/task-list";
 import type { TaskClock } from "@/components/tasks/types";
 import { Text } from "@/components/ui/text";
