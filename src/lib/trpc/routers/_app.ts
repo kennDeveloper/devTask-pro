@@ -1,6 +1,7 @@
 import { router } from "../server";
 
 import { profileRouter } from "./profile";
+import { taskRouter } from "./task";
 
 /**
  * The root router. Every feature router is mounted here, and `AppRouter` is the
@@ -9,6 +10,7 @@ import { profileRouter } from "./profile";
  */
 export const appRouter = router({
   profile: profileRouter,
+  task: taskRouter,
 });
 
 export type AppRouter = typeof appRouter;
