@@ -1,9 +1,8 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { initTRPC, TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
 
-import { withUser } from "@/lib/db/rls";
-import { profiles, type Profile } from "@/lib/db/schema";
+import * as profilesRepo from "@/lib/db/repos/profiles";
+import type { Profile } from "@/lib/db/schema";
 
 export type { Profile };
 
@@ -64,14 +63,7 @@ export async function buildContext(
 
   let profile: Profile | null = null;
   try {
-    profile = await withUser({ sub: user.id, email: user.email }, async (tx) => {
-      const rows = await tx
-        .select()
-        .from(profiles)
-        .where(eq(profiles.id, user.id))
-        .limit(1);
-      return rows[0] ?? null;
-    });
+    profile = await profilesRepo.findOwn({ sub: user.id, email: user.email });
   } catch (error) {
     // The database is unreachable or not yet provisioned. Fail *closed*: a null
     // profile leaves the caller authenticated but not active, so `activeProcedure`

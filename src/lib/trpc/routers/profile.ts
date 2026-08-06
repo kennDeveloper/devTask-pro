@@ -1,9 +1,8 @@
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
 import { z } from "zod";
 
-import { withUser } from "@/lib/db/rls";
-import { profiles, type Profile } from "@/lib/db/schema";
+import * as profilesRepo from "@/lib/db/repos/profiles";
+import type { Profile } from "@/lib/db/schema";
 import { canonicalTimeZone } from "@/lib/profile-form";
 
 import { activeProcedure, protectedProcedure, router } from "../server";
@@ -128,21 +127,9 @@ export const profileRouter = router({
   update: activeProcedure
     .input(profileUpdateInput)
     .mutation(async ({ ctx, input }) => {
-      const updated = await withUser(
+      const updated = await profilesRepo.updateOwn(
         { sub: ctx.user.id, email: ctx.user.email },
-        async (tx) => {
-          const rows = await tx
-            .update(profiles)
-            .set({
-              ...(input.displayName !== undefined && {
-                displayName: input.displayName,
-              }),
-              ...(input.timezone !== undefined && { timezone: input.timezone }),
-            })
-            .where(eq(profiles.id, ctx.user.id))
-            .returning();
-          return rows[0] ?? null;
-        },
+        { displayName: input.displayName, timezone: input.timezone },
       );
 
       if (!updated) {
