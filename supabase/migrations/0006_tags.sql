@@ -1,12 +1,13 @@
--- 0007_tags.sql
+-- 0006_tags.sql
 --
 -- `tags`, and the two join tables that attach them to a series (as a template)
 -- and to an occurrence (as the actual thing).
 --
--- NUMBERING: 0006 belongs to phase 5, which is being built on its own branch off
--- `main`. This phase is stacked on phase 3, so 0006 is simply absent from this
--- branch's history until the two merge. Migrations order lexicographically, so a
--- gap is a gap and not a hole.
+-- NUMBERING: 0006 was reserved for phase 5 while the two phases were being built
+-- in parallel. Phase 5 turned out to need no migration at all — it administers
+-- accounts through `profiles`, which 0001 already created — so the number came
+-- free and this file took it rather than leaving a permanent gap for a future
+-- reader to go looking for.
 --
 -- WHY A TAG IS ATTACHED IN TWO PLACES
 -- A series' tags are a *template*, exactly like its title and its deadline time:

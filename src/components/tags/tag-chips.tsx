@@ -7,7 +7,7 @@ import type { TagColor } from "@/lib/db/schema";
  *
  * ## Why the colour needs no translation
  *
- * `tags.color` stores a `Badge` **tone name**, not a hex — 0007 constrains it to
+ * `tags.color` stores a `Badge` **tone name**, not a hex — 0006 constrains it to
  * exactly the six tones `badge.tsx` implements. So a tag renders by handing its
  * stored value straight to `tone`, and the dark theme adjusts it like every other
  * badge in the app. A stored hex would have been a colour literal that reached

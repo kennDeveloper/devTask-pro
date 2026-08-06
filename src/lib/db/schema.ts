@@ -31,7 +31,7 @@
  *     unique index `task_occurrence_series_day_uniq`                    (0005)
  *   - RLS + grants on `tags`, `series_tags` and `occurrence_tags`, and the
  *     functional unique index `tags_user_name_uniq` on
- *     `(user_id, lower(btrim(name)))`                                    (0007)
+ *     `(user_id, lower(btrim(name)))`                                    (0006)
  */
 
 import { sql } from "drizzle-orm";
@@ -351,7 +351,7 @@ export type NewTaskOccurrence = typeof taskOccurrence.$inferInsert;
 // ---------------------------------------------------------------------------
 
 /**
- * The colours a tag may take. Mirrors `check (color in (...))` in 0007.
+ * The colours a tag may take. Mirrors `check (color in (...))` in 0006.
  *
  * **Tone names, not hex.** `AGENTS.md` forbids raw hex under `src/components/**`
  * and `src/app/**`; storing one in the database would smuggle it past that rule
@@ -374,7 +374,7 @@ export type TagColor = (typeof TAG_COLORS)[number];
  *
  * Unique per user **case-insensitively**, which the SQL enforces with a
  * functional index on `(user_id, lower(btrim(name)))`. Drizzle cannot express a
- * functional index, so that constraint has no representation below — see 0007,
+ * functional index, so that constraint has no representation below — see 0006,
  * and `normaliseTagName` in `src/lib/tasks/tag-validators.ts` for the boundary
  * half of the same rule.
  */
@@ -400,7 +400,7 @@ export const tags = pgTable(
      * Redundant as a key — `id` is already unique — and deliberately so. It
      * exists because a composite foreign key needs a unique constraint covering
      * exactly the columns it references, and both join tables reference
-     * `(id, user_id)` to carry ownership. See the long note in 0007.
+     * `(id, user_id)` to carry ownership. See the long note in 0006.
      */
     unique("tags_id_user_key").on(table.id, table.userId),
     check(

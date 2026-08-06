@@ -778,7 +778,7 @@ describe("task_occurrence_series_day_uniq", () => {
  * The block ends with the assertion this phase's schema exists for: that a user
  * **cannot attach their own tag to somebody else's task**. A foreign key check
  * does not consult RLS, so the obvious two-FK design would have permitted it —
- * the composite keys in 0007 are what make it impossible.
+ * the composite keys in 0006 are what make it impossible.
  */
 describe("tags — the criterion 6 proof for the labelling tables", () => {
   let tagOfA: string;

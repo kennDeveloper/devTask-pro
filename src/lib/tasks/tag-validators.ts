@@ -7,7 +7,7 @@
  * before the round trip is the one the server would have produced.
  *
  * **Zod is the polite half; the database is the boundary.** Every rule mirrors a
- * constraint in `supabase/migrations/0007_tags.sql` — name 1..40 after trimming,
+ * constraint in `supabase/migrations/0006_tags.sql` — name 1..40 after trimming,
  * colour from the six `Badge` tones, and uniqueness per user *case-insensitively*.
  * If the two disagree the constraint wins, loudly.
  */
@@ -32,7 +32,7 @@ export const TAG_MESSAGES = {
  * The form of a name that decides whether two tags are the same one.
  *
  * `lower(btrim(name))` — character for character what `tags_user_name_uniq` in
- * 0007 indexes on. Exported because the manager needs to compare a draft against
+ * 0006 indexes on. Exported because the manager needs to compare a draft against
  * the tags already on screen to warn *before* the round trip, and a second
  * spelling of "the same tag" is how that warning starts disagreeing with the
  * error the database returns.

@@ -32,7 +32,7 @@ import {
  *
  * ## Why `user_id` is written explicitly on a join row
  *
- * The composite foreign keys in 0007 reference `(id, user_id)` on both parents,
+ * The composite foreign keys in 0006 reference `(id, user_id)` on both parents,
  * so a link row states the owner and the database checks that the tag *and* the
  * task agree with it. Passing `claims.sub` here is what feeds that check — and
  * why "attach my tag to someone else's task" fails on the FK rather than relying

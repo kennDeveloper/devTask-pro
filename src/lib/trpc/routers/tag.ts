@@ -69,7 +69,7 @@ export const tagRouter = router({
    *
    * A name colliding case-insensitively with an existing one is a `CONFLICT`
    * carrying a sentence, not a 500 carrying a Postgres index name. The check is
-   * the database's — `tags_user_name_uniq` in 0007 — rather than a read-then-write
+   * the database's — `tags_user_name_uniq` in 0006 — rather than a read-then-write
    * here, because two requests can both pass a read and only one can win the
    * insert. The manager also compares locally to warn before the round trip;
    * both use `normaliseTagName`, so they cannot disagree about what "the same
