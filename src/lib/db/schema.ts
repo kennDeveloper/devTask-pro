@@ -24,12 +24,16 @@
  *   - `profiles.id` is `references auth.users(id) on delete cascade`  (0001)
  *   - `handle_new_user()` / `touch_updated_at()` triggers              (0002)
  *   - RLS, the grants, and `guard_profile_privileged_columns()`        (0003)
+ *   - RLS + grants on `task_occurrence`, `sync_task_completed_at()`,
+ *     and the partial index behind `task_occurrence_user_deadline_idx` (0004)
  */
 
 import { sql } from "drizzle-orm";
 import {
   check,
+  date,
   index,
+  integer,
   pgTable,
   text,
   timestamp,
@@ -91,3 +95,75 @@ export const profiles = pgTable(
 
 export type Profile = typeof profiles.$inferSelect;
 export type NewProfile = typeof profiles.$inferInsert;
+
+/** The three states a task moves between. Mirrors the CHECK in 0004. Freely reversible. */
+export const TASK_STATUSES = ["todo", "in_progress", "done"] as const;
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+
+/**
+ * `public.task_occurrence` — the trackable unit of work.
+ *
+ * A one-off task is a row with `seriesId = null`, which is every row phase 2 writes.
+ * See `supabase/migrations/0004_task_occurrence.sql` for the reasoning behind each
+ * column, and for the RLS policies that are the actual product guarantee.
+ *
+ * Two things below are load-bearing and easy to "tidy" wrongly:
+ *
+ * - **`occursOn` is a `date`, read as a string.** `mode: "string"` keeps it a bare
+ *   `YYYY-MM-DD` instead of letting the driver build a `Date`, which would attach a
+ *   time and a zone to something that has neither. The day a task sits on must not
+ *   shift because the process moved.
+ * - **`deadlineAt` is `timestamptz`.** Overdue is `deadlineAt < now()`, an absolute
+ *   comparison, so it is correct whatever the server's timezone (criterion 18).
+ */
+export const taskOccurrence = pgTable(
+  "task_occurrence",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** FK to `profiles.id`, which is also the auth user id. Cascades on delete. */
+    userId: uuid("user_id")
+      .notNull()
+      .references((): AnyPgColumn => profiles.id, { onDelete: "cascade" }),
+    /**
+     * Null for a one-off. Phase 3 creates `task_series` and adds the FK plus the
+     * partial unique index — deliberately absent here, since no row references
+     * anything yet.
+     */
+    seriesId: uuid("series_id"),
+    title: text("title").notNull(),
+    description: text("description"),
+    occursOn: date("occurs_on", { mode: "string" }).notNull(),
+    deadlineAt: timestamp("deadline_at", { withTimezone: true }),
+    status: text("status").notNull().default("todo").$type<TaskStatus>(),
+    progressPct: integer("progress_pct").notNull().default(0),
+    /** Maintained by `sync_task_completed_at()` in 0004, never by application code. */
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("task_occurrence_user_day_idx").on(table.userId, table.occursOn),
+    // The real index in 0004 is partial (`where deadline_at is not null and status
+    // <> 'done'`). Drizzle cannot express that here; this entry exists so the mirror
+    // names the index, not so it could recreate it.
+    index("task_occurrence_user_deadline_idx").on(
+      table.userId,
+      table.deadlineAt,
+    ),
+    check(
+      "task_occurrence_status_check",
+      sql`${table.status} in ('todo', 'in_progress', 'done')`,
+    ),
+    check(
+      "task_occurrence_progress_pct_check",
+      sql`${table.progressPct} between 0 and 100`,
+    ),
+  ],
+);
+
+export type TaskOccurrence = typeof taskOccurrence.$inferSelect;
+export type NewTaskOccurrence = typeof taskOccurrence.$inferInsert;
