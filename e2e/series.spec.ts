@@ -1,7 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { createAccount, deleteAccount, uniqueEmail } from "./helpers/accounts";
-import { fillForm, signIn } from "./helpers/forms";
+import { fillForm, selectForm, signIn } from "./helpers/forms";
 import { dayFromToday, seedSeries } from "./helpers/tasks";
 
 /**
@@ -104,14 +104,23 @@ test("a repeat rule produces one trackable occurrence per date, each with its ow
     await fillForm([[dialog.getByLabel("Title", { exact: true }), title]]);
 
     // Daily, three times, starting today: today, tomorrow, the day after.
-    await dialog.getByLabel("Repeats", { exact: true }).selectOption("daily");
-    await dialog.getByLabel("Ends", { exact: true }).selectOption("after");
+    //
+    // Through `selectForm` rather than a bare `selectOption` for the reason
+    // `fillForm` exists — a controlled `<select>` set before hydration is put
+    // back by the first controlled render, and the form then submits a rule
+    // nobody chose without erroring.
+    await selectForm([
+      [dialog.getByLabel("Repeats", { exact: true }), "daily"],
+      [dialog.getByLabel("Ends", { exact: true }), "after"],
+    ]);
     await fillForm([
       [dialog.getByLabel("Number of times", { exact: true }), "3"],
     ]);
 
     // The preview says what is about to be saved, in the same words the list
-    // will use.
+    // will use. Asserted *before* submitting, so a control that did not take
+    // fails here — where the cause is one line up — rather than three steps
+    // later as a wrong occurrence count.
     await expect(dialog.getByRole("status")).toHaveText("Every day, 3 times");
 
     await dialog.getByRole("button", { name: "Create", exact: true }).click();
