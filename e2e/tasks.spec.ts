@@ -133,8 +133,8 @@ test("a one-off task is created, edited, progressed, finished and deleted", asyn
   await test.step("set progress by hand, and it sticks", async () => {
     const { progress } = taskControls(page, renamed);
 
-    // `fill` sets the range and fires `input`; the control commits on release,
-    // and `blur` is the release a programmatic fill does not produce.
+    // `fill` moves the range and fires `input`; the control commits on release,
+    // and `blur` is the release a programmatic fill does not otherwise produce.
     const saved = acknowledged(page, "task.update");
     await progress.fill("40");
     await progress.blur();
@@ -184,8 +184,9 @@ test("criteria 9 and 10 — an overdue task keeps its real status, and finishing
   const userId = await createAccount(email, "active");
 
   // Seeded rather than typed: a deadline three hours *before* `now()` is the one
-  // arrangement `<input type="datetime-local">` makes awkward to state exactly.
-  // Everything asserted below happens through the browser.
+  // arrangement `<input type="datetime-local">` makes awkward to state exactly,
+  // since it takes a wall-clock reading with no zone. Everything asserted below
+  // still happens through the browser.
   const late = `Renew the certificate ${Date.now()}`;
   await seedTask(userId, {
     title: late,
