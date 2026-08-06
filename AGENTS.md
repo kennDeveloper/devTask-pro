@@ -151,6 +151,37 @@ anything else computing a day or a lateness is a bug.
   and omits `Asia/Kolkata`, canonicalising browsers do the reverse — so two independent membership
   tests disagree across the wire and reject real users.
 
+## End-to-end tests
+
+Three rules, each of which has already cost a debugging session.
+
+- **Never write a bare `fill()` in a spec — go through `fillForm()`** (`e2e/helpers/forms.ts`). A
+  controlled input filled between HTML arriving and React hydrating takes the raw DOM value and
+  dispatches an event nobody is listening to yet; component state stays empty and the first
+  controlled render wipes the field. The symptom is not "the field is empty" but a timeout waiting
+  for a navigation, with the form's own validation error in the snapshot. `fillForm` fills every
+  field and then `toPass`-asserts the values survived, so it re-fills once hydration lands. It is
+  deterministic on the `mobile` project (WebKit) and a coin-flip on `chromium`, which is why a spec
+  that passes locally is not evidence.
+- **Select by role, never by CSS or test id.** Every list renders **both** presentations at once — a
+  `<Table>` inside `hidden md:block` and a card stack inside `md:hidden` — so each task's controls
+  exist twice in the DOM with exactly one copy displayed. Playwright's role engine ignores what the
+  accessibility tree ignores, so `getByRole` resolves to whichever presentation is visible and one
+  line covers both projects. A CSS selector matches both copies and fails strict mode on one of them.
+- **That only works because rows and cards name their controls identically** — `Edit <title>`,
+  `Status of <title>`, `Progress of <title>`. `task-row.tsx` and `task-card.tsx` must stay in step;
+  renaming in one is a silent e2e break in the other.
+
+Seeding through the service role (`e2e/helpers/tasks.ts`) is for arrangements the UI is deliberately
+awkward at — a deadline a known number of minutes in the *past* — not a shortcut around the app. The
+behaviour is still asserted through the browser, and that a user cannot write somebody else's row is
+proven in `tests/integration/rls-boundary.test.ts`, not here.
+
+**Timeouts belong in `playwright.config.ts`, not in a spec.** The suite runs `fullyParallel` against
+one `next dev`, which compiles each route the first time anybody asks for it, so a spec that passes
+alone can time out in the full run on a route it does not even touch. The budgets there are sized for
+that; before treating a timeout as a regression, run the spec on its own and see whether it passes.
+
 ## Commands and gates
 
 ```bash
