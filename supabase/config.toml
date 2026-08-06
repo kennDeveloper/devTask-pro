@@ -170,7 +170,17 @@ site_url = "http://localhost:3000"
 # external_url = ""
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
 # The PKCE code exchange lands on /auth/callback; anything not listed here is refused.
-additional_redirect_urls = ["http://localhost:3000/auth/callback"]
+# GoTrue treats each entry as a GLOB and matches it against the WHOLE redirect_to URL,
+# query string included. The password-reset link is sent as
+# `/auth/callback?next=%2Freset-password`, which the bare path below does NOT match — GoTrue
+# would silently fall back to site_url, the recovery mail would land on `/` with no code to
+# exchange, and password reset would appear to do nothing. Hence the trailing-glob entry.
+# `*` is enough (rather than `**`) because authCallbackUrl() percent-encodes `next`, so no
+# literal `/` survives in the query.
+additional_redirect_urls = [
+  "http://localhost:3000/auth/callback",
+  "http://localhost:3000/auth/callback*",
+]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
 # JWT issuer URL. If not set, defaults to auth.external_url.
