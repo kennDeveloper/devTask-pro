@@ -228,9 +228,14 @@ Plus, for this phase: `pnpm test:integration` and `pnpm test:e2e` with the local
 
 ## Branch / PR target
 
-Branch `phase-2-tasks`, cut from `phase-1-foundation`. **PR targets `phase-1-foundation`, not
-`main`**, because phase 1 is still open in PR #1 — GitHub retargets it to `main` automatically once
-that merges. **The session never merges.**
+Branch `phase-2-tasks` → **PR into `main`**.
+
+Phase 1 merged as PR #1 (merge commit `4ce1ffe`, 2026-08-06). It was a true merge, not a squash, so
+`phase-1-foundation`'s tip is an ancestor of `main` and this branch already sits on main's history —
+**no rebase is needed**, and the PR diff starts cleanly at the merge base. The stacked-PR note that
+stood here while #1 was open no longer applies.
+
+**The session never merges.**
 
 ## Risks & rollbacks
 
