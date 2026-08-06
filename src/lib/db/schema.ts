@@ -29,18 +29,24 @@
  *   - RLS + grants on `task_series`, its six cross-column CHECKs, the
  *     partial index behind `task_series_user_live_idx`, and the partial
  *     unique index `task_occurrence_series_day_uniq`                    (0005)
+ *   - RLS + grants on `tags`, `series_tags` and `occurrence_tags`, and the
+ *     functional unique index `tags_user_name_uniq` on
+ *     `(user_id, lower(btrim(name)))`                                    (0007)
  */
 
 import { sql } from "drizzle-orm";
 import {
   check,
   date,
+  foreignKey,
   index,
   integer,
   pgTable,
+  primaryKey,
   text,
   time,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
   type AnyPgColumn,
@@ -339,3 +345,147 @@ export const taskOccurrence = pgTable(
 
 export type TaskOccurrence = typeof taskOccurrence.$inferSelect;
 export type NewTaskOccurrence = typeof taskOccurrence.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Tags
+// ---------------------------------------------------------------------------
+
+/**
+ * The colours a tag may take. Mirrors `check (color in (...))` in 0007.
+ *
+ * **Tone names, not hex.** `AGENTS.md` forbids raw hex under `src/components/**`
+ * and `src/app/**`; storing one in the database would smuggle it past that rule
+ * into a place the dark theme cannot adjust. These six are exactly the tones
+ * `src/components/ui/badge.tsx` implements, so a tag renders as a `Badge` with no
+ * translation step.
+ */
+export const TAG_COLORS = [
+  "neutral",
+  "info",
+  "success",
+  "warning",
+  "danger",
+  "default",
+] as const;
+export type TagColor = (typeof TAG_COLORS)[number];
+
+/**
+ * `public.tags` — a user-defined label.
+ *
+ * Unique per user **case-insensitively**, which the SQL enforces with a
+ * functional index on `(user_id, lower(btrim(name)))`. Drizzle cannot express a
+ * functional index, so that constraint has no representation below — see 0007,
+ * and `normaliseTagName` in `src/lib/tasks/tag-validators.ts` for the boundary
+ * half of the same rule.
+ */
+export const tags = pgTable(
+  "tags",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references((): AnyPgColumn => profiles.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    color: text("color").notNull().default("neutral").$type<TagColor>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("tags_user_idx").on(table.userId),
+    /**
+     * Redundant as a key — `id` is already unique — and deliberately so. It
+     * exists because a composite foreign key needs a unique constraint covering
+     * exactly the columns it references, and both join tables reference
+     * `(id, user_id)` to carry ownership. See the long note in 0007.
+     */
+    unique("tags_id_user_key").on(table.id, table.userId),
+    check(
+      "tags_color_check",
+      sql`${table.color} in ('neutral', 'info', 'success', 'warning', 'danger', 'default')`,
+    ),
+  ],
+);
+
+export type Tag = typeof tags.$inferSelect;
+export type NewTag = typeof tags.$inferInsert;
+
+/**
+ * `public.series_tags` — a series' **template** tags.
+ *
+ * Copied onto an occurrence when it materialises, exactly as the series' title
+ * and deadline time already are. Editing them afterwards does not reach back
+ * into occurrences that already exist.
+ *
+ * ## The composite foreign keys are the security-relevant part
+ *
+ * A foreign key check does **not** consult RLS — it can see rows the caller
+ * cannot. So referencing `series_id` and `tag_id` separately would let a
+ * signed-in user write a link between their own tag and somebody else's series:
+ * the insert policy is satisfied (`user_id = auth.uid()`), both keys resolve, and
+ * a row lands in another person's data. Referencing `(id, user_id)` on both
+ * parents makes "all three belong to the same person" something the database
+ * enforces rather than something a policy is trusted for.
+ */
+export const seriesTags = pgTable(
+  "series_tags",
+  {
+    userId: uuid("user_id").notNull(),
+    seriesId: uuid("series_id").notNull(),
+    tagId: uuid("tag_id").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.seriesId, table.tagId] }),
+    foreignKey({
+      columns: [table.seriesId, table.userId],
+      foreignColumns: [taskSeries.id, taskSeries.userId],
+      name: "series_tags_series_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.tagId, table.userId],
+      foreignColumns: [tags.id, tags.userId],
+      name: "series_tags_tag_fk",
+    }).onDelete("cascade"),
+    index("series_tags_tag_idx").on(table.tagId),
+    index("series_tags_user_idx").on(table.userId),
+  ],
+);
+
+export type SeriesTag = typeof seriesTags.$inferSelect;
+export type NewSeriesTag = typeof seriesTags.$inferInsert;
+
+/**
+ * `public.occurrence_tags` — an occurrence's own tags.
+ *
+ * Seeded from its series at materialisation and independent thereafter. Same
+ * composite-FK reasoning as `series_tags` above.
+ */
+export const occurrenceTags = pgTable(
+  "occurrence_tags",
+  {
+    userId: uuid("user_id").notNull(),
+    occurrenceId: uuid("occurrence_id").notNull(),
+    tagId: uuid("tag_id").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.occurrenceId, table.tagId] }),
+    foreignKey({
+      columns: [table.occurrenceId, table.userId],
+      foreignColumns: [taskOccurrence.id, taskOccurrence.userId],
+      name: "occurrence_tags_occurrence_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.tagId, table.userId],
+      foreignColumns: [tags.id, tags.userId],
+      name: "occurrence_tags_tag_fk",
+    }).onDelete("cascade"),
+    index("occurrence_tags_tag_idx").on(table.tagId),
+    index("occurrence_tags_user_idx").on(table.userId),
+  ],
+);
+
+export type OccurrenceTag = typeof occurrenceTags.$inferSelect;
+export type NewOccurrenceTag = typeof occurrenceTags.$inferInsert;
