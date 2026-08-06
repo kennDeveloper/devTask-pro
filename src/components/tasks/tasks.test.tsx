@@ -58,6 +58,7 @@ const api = vi.hoisted(() => {
   return {
     invalidate: vi.fn(),
     invalidateSeries: vi.fn(),
+    invalidateSeriesList: vi.fn(),
     create: stub(),
     update: stub(),
     remove: stub(),
@@ -85,7 +86,10 @@ vi.mock("@/lib/trpc/client", () => {
     trpc: {
       useUtils: () => ({
         task: { invalidate: api.invalidate },
-        series: { invalidate: api.invalidateSeries },
+        series: {
+          invalidate: api.invalidateSeries,
+          list: { invalidate: api.invalidateSeriesList },
+        },
       }),
       task: {
         create: { useMutation: (o?: MutationOptions) => bind(api.create, o) },
