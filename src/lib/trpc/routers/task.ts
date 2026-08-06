@@ -2,7 +2,10 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 
 import * as occurrences from "@/lib/db/repos/occurrences";
+import * as tagsRepo from "@/lib/db/repos/tags";
 import * as feed from "@/lib/tasks/feed";
+import { taskFiltersInput } from "@/lib/tasks/filter-validators";
+import { tagIdsField } from "@/lib/tasks/tag-validators";
 import { parseOccurrenceRef } from "@/lib/tasks/occurrence-ref";
 import {
   taskIdField,
@@ -85,6 +88,15 @@ function toPublicTask(task: feed.ListedOccurrence) {
     completedAt: task.completedAt?.toISOString() ?? null,
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString(),
+    /**
+     * A row's own tags, or — for a projection — its series' template tags. The
+     * feed resolves both, so a component never has to ask which kind it has.
+     */
+    tags: task.tags.map((tag) => ({
+      id: tag.id,
+      name: tag.name,
+      color: tag.color,
+    })),
   };
 }
 
@@ -101,6 +113,15 @@ export type PublicTask = ReturnType<typeof toPublicTask>;
  * nothing to do with anyone's timezone.
  */
 const nowInput = z.object({ now: z.date().optional() });
+
+/**
+ * The search box and the three filter controls, as one optional value.
+ *
+ * On the read procedures rather than a procedure of their own: a filtered list
+ * is the same list, and a second `task.search` would be a second read path with
+ * its own merge, its own ordering and its own chance to disagree with this one.
+ */
+const filtersInput = z.object({ filters: taskFiltersInput.optional() });
 
 export const taskRouter = router({
   /**
@@ -121,13 +142,14 @@ export const taskRouter = router({
     // recurrence gave it a window to derive, and `trpc.task.list.useQuery()`
     // with no argument is the call site in `task-list.tsx`. Optional keeps that
     // working while still letting a test pin the instant.
-    .input(nowInput.optional())
+    .input(nowInput.extend(filtersInput.shape).optional())
     .query(async ({ ctx, input }) =>
       (
         await feed.listAllFeed(
           claimsFor(ctx),
           todayInZone(ctx.profile.timezone, input?.now ?? new Date()),
           ctx.profile.timezone,
+          input?.filters,
         )
       ).map(toPublicTask),
     ),
@@ -142,14 +164,21 @@ export const taskRouter = router({
    * same is now true of the expansion window, which is derived from that day.
    */
   listForDay: activeProcedure
-    .input(nowInput.extend({ occursOn: z.string().optional() }))
+    .input(
+      nowInput.extend({ occursOn: z.string().optional() }).extend(filtersInput.shape),
+    )
     .query(async ({ ctx, input }) => {
       const day =
         input.occursOn ??
         todayInZone(ctx.profile.timezone, input.now ?? new Date());
 
       return (
-        await feed.listDayFeed(claimsFor(ctx), day, ctx.profile.timezone)
+        await feed.listDayFeed(
+          claimsFor(ctx),
+          day,
+          ctx.profile.timezone,
+          input.filters,
+        )
       ).map(toPublicTask);
     }),
 
@@ -166,7 +195,7 @@ export const taskRouter = router({
    * `src/lib/tasks/overdue.test.ts`.
    */
   listOverdue: activeProcedure
-    .input(nowInput)
+    .input(nowInput.extend(filtersInput.shape))
     .query(async ({ ctx, input }) => {
       const now = input.now ?? new Date();
 
@@ -176,6 +205,7 @@ export const taskRouter = router({
           todayInZone(ctx.profile.timezone, now),
           now,
           ctx.profile.timezone,
+          input.filters,
         )
       ).map(toPublicTask);
     }),
@@ -188,9 +218,9 @@ export const taskRouter = router({
    * path rather than by letting a client assert membership.
    */
   create: activeProcedure
-    .input(taskInput.and(nowInput))
+    .input(taskInput.and(nowInput).and(z.object({ tagIds: tagIdsField })))
     .mutation(async ({ ctx, input }) => {
-      const { now, ...task } = input;
+      const { now, tagIds, ...task } = input;
 
       const created = await occurrences.create(claimsFor(ctx), {
         ...task,
@@ -200,7 +230,14 @@ export const taskRouter = router({
         occursOn: task.occursOn ?? todayInZone(ctx.profile.timezone, now ?? new Date()),
       });
 
-      return toPublicTask(feed.fromRow(created));
+      // Written after the row exists, because `occurrence_tags` has a composite
+      // foreign key onto `(id, user_id)` and there is nothing to point at until
+      // then. A create with no tags issues no second statement at all.
+      if (tagIds?.length) {
+        await tagsRepo.setForOccurrence(claimsFor(ctx), created.id, tagIds);
+      }
+
+      return toPublicTask(feed.fromRow(created, []));
     }),
 
   /**
@@ -227,9 +264,9 @@ export const taskRouter = router({
    * exactly what this application promises not to do.
    */
   update: activeProcedure
-    .input(taskUpdateInput)
+    .input(taskUpdateInput.and(z.object({ tagIds: tagIdsField })))
     .mutation(async ({ ctx, input }) => {
-      const { id, ...patch } = input;
+      const { id, tagIds, ...patch } = input;
 
       const ref = parseOccurrenceRef(id);
       if (!ref) {
@@ -259,7 +296,23 @@ export const taskRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message: "Task not found" });
       }
 
-      return toPublicTask(feed.fromRow(updated));
+      // Only when the caller actually sent a selection. `undefined` means "the
+      // picker was not on screen" — a row control sending `{ id, status }` must
+      // not be read as "remove every tag".
+      if (tagIds !== undefined) {
+        await tagsRepo.setForOccurrence(claimsFor(ctx), updated.id, tagIds);
+      }
+
+      const tags = await tagsRepo.tagsForOccurrences(claimsFor(ctx), [
+        updated.id,
+      ]);
+
+      return toPublicTask(
+        feed.fromRow(
+          updated,
+          tags.map((link) => link.tag),
+        ),
+      );
     }),
 
   /**

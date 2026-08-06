@@ -3,9 +3,12 @@ import {
   asc,
   desc,
   eq,
+  gte,
+  ilike,
   inArray,
   isNotNull,
   lt,
+  lte,
   ne,
   sql,
   type SQL,
@@ -13,10 +16,12 @@ import {
 
 import { withUser, type UserClaims } from "@/lib/db/rls";
 import {
+  occurrenceTags,
   taskOccurrence,
   type TaskOccurrence,
   type TaskStatus,
 } from "@/lib/db/schema";
+import { hasAnyFilter, type TaskFilters } from "@/lib/tasks/filters";
 
 /**
  * The `task_occurrence` repository — the only module that speaks Drizzle about tasks.
@@ -93,6 +98,76 @@ export function overdueCondition(now: Date): SQL {
   )!;
 }
 
+/**
+ * Make a user's `%` and `_` literal.
+ *
+ * Without it, searching for "50%" matches every task and "a_b" matches "axb".
+ * The backslash is Postgres's default `ilike` escape character.
+ */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
+/**
+ * The SQL half of the search-and-filter definition.
+ *
+ * **Its TypeScript twin is `matchesFilters` in `src/lib/tasks/filters.ts`.**
+ * Materialised rows are filtered here; the occurrences a repeat rule is only
+ * projecting are filtered there, because they do not exist as rows to filter.
+ * The two have to agree, or a search returns a recurring task on the one day
+ * somebody happened to touch it and on no other — a failure that produces no
+ * error at all, just a list missing the thing the user was looking for.
+ *
+ * The same arrangement `overdueCondition` and `isOverdue` already have, and
+ * `AGENTS.md` already requires those two to be changed together. So do these.
+ *
+ * Returns `undefined` when nothing is being filtered, so the caller composes the
+ * exact query phase 3 shipped rather than one wrapped in a tautology.
+ */
+export function filterCondition(
+  filters: TaskFilters | undefined,
+): SQL | undefined {
+  if (!hasAnyFilter(filters) || !filters) return undefined;
+
+  const conditions: SQL[] = [];
+
+  const search = filters.search?.trim();
+  if (search) {
+    // `ilike` rather than full-text: this is one person's task list, and
+    // full-text does not match mid-word — which is exactly what someone typing
+    // three letters expects. See the decision in `docs/gsd/phase-4-plan.md`.
+    conditions.push(ilike(taskOccurrence.title, `%${escapeLike(search)}%`));
+  }
+
+  if (filters.statuses?.length) {
+    conditions.push(inArray(taskOccurrence.status, [...filters.statuses]));
+  }
+
+  // Both bounds inclusive, compared as text — correct for a zero-padded `date`
+  // column read in `mode: "string"`.
+  if (filters.from) conditions.push(gte(taskOccurrence.occursOn, filters.from));
+  if (filters.to) conditions.push(lte(taskOccurrence.occursOn, filters.to));
+
+  if (filters.tagIds?.length) {
+    /**
+     * `exists` rather than a join, deliberately. Joining `occurrence_tags` would
+     * return one row per matching tag, so a task carrying two of the selected
+     * tags would appear twice — and the fix (`distinct`) would then have to be
+     * remembered by every caller. `exists` asks the question the filter actually
+     * poses: does this task carry *any* of them.
+     */
+    conditions.push(
+      sql`exists (
+        select 1 from ${occurrenceTags}
+        where ${occurrenceTags.occurrenceId} = ${taskOccurrence.id}
+          and ${occurrenceTags.tagId} in ${filters.tagIds}
+      )`,
+    );
+  }
+
+  return conditions.length > 0 ? and(...conditions) : undefined;
+}
+
 /** `user_id = <caller>`, the clause every query in this module carries. */
 function ownedBy(claims: UserClaims): SQL {
   return eq(taskOccurrence.userId, claims.sub);
@@ -147,12 +222,19 @@ export interface UpdateOccurrencePatch {
 export async function listForDay(
   claims: UserClaims,
   occursOn: string,
+  filters?: TaskFilters,
 ): Promise<TaskOccurrence[]> {
   return withUser(claims, async (tx) =>
     tx
       .select()
       .from(taskOccurrence)
-      .where(and(ownedBy(claims), eq(taskOccurrence.occursOn, occursOn)))
+      .where(
+        and(
+          ownedBy(claims),
+          eq(taskOccurrence.occursOn, occursOn),
+          filterCondition(filters),
+        ),
+      )
       .orderBy(asc(taskOccurrence.deadlineAt), asc(taskOccurrence.createdAt)),
   );
 }
@@ -168,12 +250,15 @@ export async function listForDay(
 export async function listOverdue(
   claims: UserClaims,
   now: Date,
+  filters?: TaskFilters,
 ): Promise<TaskOccurrence[]> {
   return withUser(claims, async (tx) =>
     tx
       .select()
       .from(taskOccurrence)
-      .where(and(ownedBy(claims), overdueCondition(now)))
+      .where(
+        and(ownedBy(claims), overdueCondition(now), filterCondition(filters)),
+      )
       .orderBy(asc(taskOccurrence.deadlineAt)),
   );
 }
@@ -186,12 +271,15 @@ export async function listOverdue(
  * occurrences that stops being true, and this is the function that grows a cursor —
  * which is easier to see coming with the query in one place than spread across routers.
  */
-export async function listAll(claims: UserClaims): Promise<TaskOccurrence[]> {
+export async function listAll(
+  claims: UserClaims,
+  filters?: TaskFilters,
+): Promise<TaskOccurrence[]> {
   return withUser(claims, async (tx) =>
     tx
       .select()
       .from(taskOccurrence)
-      .where(ownedBy(claims))
+      .where(and(ownedBy(claims), filterCondition(filters)))
       .orderBy(desc(taskOccurrence.occursOn), desc(taskOccurrence.createdAt)),
   );
 }

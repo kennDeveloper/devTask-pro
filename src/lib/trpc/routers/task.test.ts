@@ -43,8 +43,21 @@ vi.mock("@/lib/db/repos/series", () => ({
   findOwn: vi.fn(),
 }));
 
+vi.mock("@/lib/db/repos/tags", () => ({
+  list: vi.fn(),
+  create: vi.fn(),
+  update: vi.fn(),
+  remove: vi.fn(),
+  tagsForOccurrences: vi.fn(),
+  tagsForSeries: vi.fn(),
+  setForOccurrence: vi.fn(),
+  setForOccurrenceIn: vi.fn(),
+  setForSeries: vi.fn(),
+}));
+
 import * as occurrences from "@/lib/db/repos/occurrences";
 import * as seriesRepo from "@/lib/db/repos/series";
+import * as tagsRepo from "@/lib/db/repos/tags";
 import { createCallerFactory, type Context } from "../server";
 import { taskRouter } from "./task";
 
@@ -112,6 +125,9 @@ beforeEach(() => {
   vi.mocked(occurrences.listAll).mockResolvedValue([]);
   vi.mocked(occurrences.listForDay).mockResolvedValue([]);
   vi.mocked(occurrences.listOverdue).mockResolvedValue([]);
+  vi.mocked(tagsRepo.tagsForOccurrences).mockResolvedValue([]);
+  vi.mocked(tagsRepo.tagsForSeries).mockResolvedValue([]);
+  vi.mocked(tagsRepo.setForOccurrence).mockResolvedValue(undefined);
 });
 
 describe("the procedure ladder", () => {
@@ -213,10 +229,12 @@ describe("ownership comes from the session, not the input", () => {
     const caller = createCaller(contextFor("active"));
     await caller.list();
 
-    expect(occurrences.listAll).toHaveBeenCalledWith({
-      sub: USER_ID,
-      email: "member@example.com",
-    });
+    // The trailing `undefined` is the filters argument phase 4 added: no filter
+    // is selected, so the repo composes the same query it did before.
+    expect(occurrences.listAll).toHaveBeenCalledWith(
+      { sub: USER_ID, email: "member@example.com" },
+      undefined,
+    );
   });
 
   /**
@@ -253,6 +271,7 @@ describe("today is the caller's day, not the server's", () => {
     expect(occurrences.listForDay).toHaveBeenCalledWith(
       expect.anything(),
       "2026-08-07",
+      undefined,
     );
   });
 
@@ -265,6 +284,7 @@ describe("today is the caller's day, not the server's", () => {
     expect(occurrences.listForDay).toHaveBeenCalledWith(
       expect.anything(),
       "2026-08-06",
+      undefined,
     );
   });
 
@@ -288,6 +308,7 @@ describe("today is the caller's day, not the server's", () => {
     expect(occurrences.listForDay).toHaveBeenCalledWith(
       expect.anything(),
       "2026-01-01",
+      undefined,
     );
   });
 });

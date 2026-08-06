@@ -27,7 +27,20 @@ vi.mock("@/lib/db/repos/series", () => ({
   softDelete: vi.fn(),
 }));
 
+vi.mock("@/lib/db/repos/tags", () => ({
+  list: vi.fn(),
+  create: vi.fn(),
+  update: vi.fn(),
+  remove: vi.fn(),
+  tagsForOccurrences: vi.fn(),
+  tagsForSeries: vi.fn(),
+  setForOccurrence: vi.fn(),
+  setForOccurrenceIn: vi.fn(),
+  setForSeries: vi.fn(),
+}));
+
 import * as seriesRepo from "@/lib/db/repos/series";
+import * as tagsRepo from "@/lib/db/repos/tags";
 import { createCallerFactory, type Context } from "../server";
 import { seriesRouter } from "./series";
 
@@ -106,6 +119,7 @@ const VALID_INPUT = {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(seriesRepo.listActive).mockResolvedValue([]);
+  vi.mocked(tagsRepo.setForSeries).mockResolvedValue(undefined);
 });
 
 describe("the procedure ladder", () => {

@@ -2,6 +2,7 @@ import { router } from "../server";
 
 import { profileRouter } from "./profile";
 import { seriesRouter } from "./series";
+import { tagRouter } from "./tag";
 import { taskRouter } from "./task";
 
 /**
@@ -13,6 +14,7 @@ export const appRouter = router({
   profile: profileRouter,
   task: taskRouter,
   series: seriesRouter,
+  tag: tagRouter,
 });
 
 export type AppRouter = typeof appRouter;

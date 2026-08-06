@@ -24,8 +24,21 @@ vi.mock("@/lib/db/repos/series", () => ({
   findOwn: vi.fn(),
 }));
 
+vi.mock("@/lib/db/repos/tags", () => ({
+  list: vi.fn(),
+  create: vi.fn(),
+  update: vi.fn(),
+  remove: vi.fn(),
+  tagsForOccurrences: vi.fn(),
+  tagsForSeries: vi.fn(),
+  setForOccurrence: vi.fn(),
+  setForOccurrenceIn: vi.fn(),
+  setForSeries: vi.fn(),
+}));
+
 import * as occurrences from "@/lib/db/repos/occurrences";
 import * as seriesRepo from "@/lib/db/repos/series";
+import * as tagsRepo from "@/lib/db/repos/tags";
 
 import {
   feedWindow,
@@ -100,6 +113,11 @@ beforeEach(() => {
   vi.mocked(occurrences.listOverdue).mockResolvedValue([]);
   vi.mocked(occurrences.listAll).mockResolvedValue([]);
   vi.mocked(seriesRepo.listActive).mockResolvedValue([]);
+  // Tags are their own phase-4 concern; every read now asks for them, and none
+  // of the assertions in this file are about them.
+  vi.mocked(tagsRepo.tagsForOccurrences).mockResolvedValue([]);
+  vi.mocked(tagsRepo.tagsForSeries).mockResolvedValue([]);
+  vi.mocked(tagsRepo.setForOccurrence).mockResolvedValue(undefined);
 });
 
 describe("feedWindow", () => {

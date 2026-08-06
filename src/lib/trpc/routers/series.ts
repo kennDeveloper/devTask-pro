@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 
 import * as seriesRepo from "@/lib/db/repos/series";
+import * as tagsRepo from "@/lib/db/repos/tags";
 import type { TaskSeries } from "@/lib/db/schema";
 import { ruleFromSeries } from "@/lib/tasks/feed";
 import {
@@ -9,6 +10,7 @@ import {
   seriesUpdateInput,
   toRecurrenceRule,
 } from "@/lib/tasks/series-validators";
+import { tagIdsField } from "@/lib/tasks/tag-validators";
 import { taskIdField } from "@/lib/tasks/validators";
 
 import { activeProcedure, router } from "../server";
@@ -109,7 +111,7 @@ export const seriesRouter = router({
    * row rather than 365.
    */
   create: activeProcedure
-    .input(seriesInput)
+    .input(seriesInput.and(z.object({ tagIds: tagIdsField })))
     .mutation(async ({ ctx, input }) => {
       const created = await seriesRepo.create(claimsFor(ctx), {
         title: input.title,
@@ -118,6 +120,13 @@ export const seriesRouter = router({
         deadlineTime: input.deadlineTime ?? null,
         rule: toRecurrenceRule(input.rule),
       });
+
+      // Template tags. Written to `series_tags` only — occurrences that already
+      // exist keep whatever they materialised with, which is the same rule every
+      // other series field follows.
+      if (input.tagIds?.length) {
+        await tagsRepo.setForSeries(claimsFor(ctx), created.id, input.tagIds);
+      }
 
       return toPublicSeries(created);
     }),
@@ -132,7 +141,7 @@ export const seriesRouter = router({
    * including on a date the new rule no longer names.
    */
   update: activeProcedure
-    .input(seriesUpdateInput)
+    .input(seriesUpdateInput.and(z.object({ tagIds: tagIdsField })))
     .mutation(async ({ ctx, input }) => {
       const updated = await seriesRepo.update(claimsFor(ctx), input.id, {
         title: input.title,
@@ -144,6 +153,10 @@ export const seriesRouter = router({
 
       if (!updated) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Series not found" });
+      }
+
+      if (input.tagIds !== undefined) {
+        await tagsRepo.setForSeries(claimsFor(ctx), updated.id, input.tagIds);
       }
 
       return toPublicSeries(updated);
