@@ -8,6 +8,7 @@ import {
   setStatus,
   uniqueEmail,
 } from "./helpers/accounts";
+import { fillForm, signIn } from "./helpers/forms";
 import { clearInbox, confirmationLinkFor } from "./helpers/mailpit";
 
 /**
@@ -26,9 +27,11 @@ test("a new signup is gated, then approved, then let in", async ({ page }) => {
 
   await test.step("sign up", async () => {
     await page.goto("/sign-up");
-    await page.getByLabel(/^email$/i).fill(email);
-    await page.getByLabel(/^password$/i).fill(TEST_PASSWORD);
-    await page.getByLabel(/confirm/i).fill(TEST_PASSWORD);
+    await fillForm([
+      [page.getByLabel(/^email$/i), email],
+      [page.getByLabel(/^password$/i), TEST_PASSWORD],
+      [page.getByLabel(/confirm/i), TEST_PASSWORD],
+    ]);
     await page.getByRole("button", { name: /create account|sign up/i }).click();
 
     // Confirmations are on: no session, an inbox prompt instead.
@@ -80,10 +83,7 @@ test("criterion 3 — a rejected account sees /no-access", async ({ page }) => {
   const email = uniqueEmail("rejected");
   await createAccount(email, "rejected");
 
-  await page.goto("/sign-in");
-  await page.getByLabel(/^email$/i).fill(email);
-  await page.getByLabel(/^password$/i).fill(TEST_PASSWORD);
-  await page.getByRole("button", { name: /sign in/i }).click();
+  await signIn(page, email);
 
   await page.waitForURL(/\/no-access/);
   await expect(page).toHaveURL(/\/no-access/);
@@ -95,10 +95,7 @@ test("criterion 5 — a non-admin cannot render an admin route", async ({ page }
   const email = uniqueEmail("member");
   await createAccount(email, "active", "member");
 
-  await page.goto("/sign-in");
-  await page.getByLabel(/^email$/i).fill(email);
-  await page.getByLabel(/^password$/i).fill(TEST_PASSWORD);
-  await page.getByRole("button", { name: /sign in/i }).click();
+  await signIn(page, email);
   await page.waitForURL(/\/today/);
 
   // The admin tier itself is phase 5. What must hold NOW is that the route does not
@@ -116,16 +113,15 @@ test("an unconfirmed account gets its own message, not 'bad credentials'", async
   await clearInbox();
 
   await page.goto("/sign-up");
-  await page.getByLabel(/^email$/i).fill(email);
-  await page.getByLabel(/^password$/i).fill(TEST_PASSWORD);
-  await page.getByLabel(/confirm/i).fill(TEST_PASSWORD);
+  await fillForm([
+    [page.getByLabel(/^email$/i), email],
+    [page.getByLabel(/^password$/i), TEST_PASSWORD],
+    [page.getByLabel(/confirm/i), TEST_PASSWORD],
+  ]);
   await page.getByRole("button", { name: /create account|sign up/i }).click();
   await expect(page.getByText(/check your inbox/i)).toBeVisible();
 
-  await page.goto("/sign-in");
-  await page.getByLabel(/^email$/i).fill(email);
-  await page.getByLabel(/^password$/i).fill(TEST_PASSWORD);
-  await page.getByRole("button", { name: /sign in/i }).click();
+  await signIn(page, email);
 
   await expect(page.getByText(/confirm/i).first()).toBeVisible();
 

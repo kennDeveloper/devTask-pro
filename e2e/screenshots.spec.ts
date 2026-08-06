@@ -1,11 +1,7 @@
 import { expect, test } from "@playwright/test";
 
-import {
-  TEST_PASSWORD,
-  createAccount,
-  deleteAccount,
-  uniqueEmail,
-} from "./helpers/accounts";
+import { createAccount, deleteAccount, uniqueEmail } from "./helpers/accounts";
+import { signIn } from "./helpers/forms";
 
 /**
  * Screenshots every route, in both themes, at whatever viewport the running project
@@ -78,10 +74,7 @@ for (const theme of ["light", "dark"] as const) {
         [pending, "pending", /\/pending/],
         [suspended, "no-access", /\/no-access/],
       ] as const) {
-        await page.goto("/sign-in");
-        await page.getByLabel(/^email$/i).fill(email);
-        await page.getByLabel(/^password$/i).fill(TEST_PASSWORD);
-        await page.getByRole("button", { name: /sign in/i }).click();
+        await signIn(page, email);
         await page.waitForURL(url);
 
         await page.screenshot({
@@ -102,10 +95,7 @@ for (const theme of ["light", "dark"] as const) {
       const email = uniqueEmail("shot-active");
       await createAccount(email, "active");
 
-      await page.goto("/sign-in");
-      await page.getByLabel(/^email$/i).fill(email);
-      await page.getByLabel(/^password$/i).fill(TEST_PASSWORD);
-      await page.getByRole("button", { name: /sign in/i }).click();
+      await signIn(page, email);
       await page.waitForURL(/\/today/);
 
       for (const route of SIGNED_IN_ROUTES) {
