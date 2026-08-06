@@ -186,7 +186,12 @@ describe("the two presentations", () => {
     expect(cards.querySelector('[data-slot="task-cards-empty"]')).not.toBeNull();
 
     // Same copy in both — the two presentations are one list, not two features.
-    expect(screen.getAllByText("No tasks yet")).toHaveLength(2);
+    // Asserted by role: the title is a real heading, so a screen-reader user can
+    // reach "why is this empty" by skimming instead of by reading through. In
+    // jsdom no media query has been applied, so both copies are present.
+    expect(
+      screen.getAllByRole("heading", { name: "No tasks yet" }),
+    ).toHaveLength(2);
   });
 
   it("replaces the list with an error rather than a skeleton that never resolves", async () => {
@@ -472,6 +477,8 @@ describe("the create dialog", () => {
 
     expect(screen.queryByRole("button", { name: "New task" })).toBeNull();
     // And says so calmly: an empty overdue list is good news, not a gap.
-    expect(screen.getAllByText("Nothing overdue")).toHaveLength(2);
+    expect(
+      screen.getAllByRole("heading", { name: "Nothing overdue" }),
+    ).toHaveLength(2);
   });
 });

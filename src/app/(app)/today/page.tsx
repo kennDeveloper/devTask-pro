@@ -65,7 +65,11 @@ export default async function TodayPage() {
             open has failed at the job you opened it for.
           </Text>
         </div>
-        <TaskList view="overdue" clock={clock} />
+        {/* `h3`: this list lives inside a section already titled "Overdue" at
+            `h2`, so its empty state is a level below that rather than a sibling
+            of the heading it sits under. `/overdue` renders the same view as a
+            whole page and takes the default. */}
+        <TaskList view="overdue" clock={clock} headingLevel="h3" />
       </section>
 
       <section aria-labelledby="today-day-heading" className="space-y-3">
@@ -79,7 +83,7 @@ export default async function TodayPage() {
             and the boundary moves with you.
           </Text>
         </div>
-        <TaskList view="day" clock={clock} />
+        <TaskList view="day" clock={clock} headingLevel="h3" />
       </section>
     </div>
   );

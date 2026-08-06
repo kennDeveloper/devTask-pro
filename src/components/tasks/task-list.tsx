@@ -16,7 +16,11 @@ import { trpc } from "@/lib/trpc/client";
 import { NewTaskButton } from "./new-task-button";
 import { TaskCard } from "./task-card";
 import { TaskDialog } from "./task-dialog";
-import { TaskCardsEmpty, TaskTableEmpty } from "./task-empty";
+import {
+  TaskCardsEmpty,
+  TaskTableEmpty,
+  type EmptyHeadingLevel,
+} from "./task-empty";
 import { taskColumns } from "./task-presentation";
 import { TaskRow } from "./task-row";
 import { TaskCardListSkeleton, TaskTableSkeleton } from "./task-skeleton";
@@ -128,16 +132,33 @@ export interface TaskListProps {
   clock: TaskClock;
   /** Which calendar day `view="day"` shows. Defaults to the user's today. */
   occursOn?: string;
+  /**
+   * Where the empty state's title sits in the page's outline. Defaults to `h2`,
+   * which is right for a list that *is* the page's content under its `h1`.
+   * `/today` renders two lists inside titled sections and passes `h3`.
+   */
+  headingLevel?: EmptyHeadingLevel;
 }
 
-export function TaskList({ view, clock, occursOn }: TaskListProps) {
+export function TaskList({
+  view,
+  clock,
+  occursOn,
+  headingLevel = "h2",
+}: TaskListProps) {
   switch (view) {
     case "day":
-      return <DayTaskList clock={clock} occursOn={occursOn ?? clock.today} />;
+      return (
+        <DayTaskList
+          clock={clock}
+          occursOn={occursOn ?? clock.today}
+          headingLevel={headingLevel}
+        />
+      );
     case "overdue":
-      return <OverdueTaskList clock={clock} />;
+      return <OverdueTaskList clock={clock} headingLevel={headingLevel} />;
     case "all":
-      return <AllTaskList clock={clock} />;
+      return <AllTaskList clock={clock} headingLevel={headingLevel} />;
   }
 }
 
@@ -148,9 +169,24 @@ export function TaskList({ view, clock, occursOn }: TaskListProps) {
  * `currentUserClock()`, and sending it means the list and the "Today" in each
  * row cannot disagree if the request crosses midnight.
  */
-function DayTaskList({ clock, occursOn }: { clock: TaskClock; occursOn: string }) {
+function DayTaskList({
+  clock,
+  occursOn,
+  headingLevel,
+}: {
+  clock: TaskClock;
+  occursOn: string;
+  headingLevel: EmptyHeadingLevel;
+}) {
   const query = trpc.task.listForDay.useQuery({ occursOn });
-  return <TaskListLayout view="day" clock={clock} query={query} />;
+  return (
+    <TaskListLayout
+      view="day"
+      clock={clock}
+      query={query}
+      headingLevel={headingLevel}
+    />
+  );
 }
 
 /**
@@ -159,23 +195,56 @@ function DayTaskList({ clock, occursOn }: { clock: TaskClock; occursOn: string }
  * server's clock is the right one for an absolute comparison the client should
  * not get a vote on.
  */
-function OverdueTaskList({ clock }: { clock: TaskClock }) {
+function OverdueTaskList({
+  clock,
+  headingLevel,
+}: {
+  clock: TaskClock;
+  headingLevel: EmptyHeadingLevel;
+}) {
   const query = trpc.task.listOverdue.useQuery({});
-  return <TaskListLayout view="overdue" clock={clock} query={query} />;
+  return (
+    <TaskListLayout
+      view="overdue"
+      clock={clock}
+      query={query}
+      headingLevel={headingLevel}
+    />
+  );
 }
 
-function AllTaskList({ clock }: { clock: TaskClock }) {
+function AllTaskList({
+  clock,
+  headingLevel,
+}: {
+  clock: TaskClock;
+  headingLevel: EmptyHeadingLevel;
+}) {
   const query = trpc.task.list.useQuery();
-  return <TaskListLayout view="all" clock={clock} query={query} />;
+  return (
+    <TaskListLayout
+      view="all"
+      clock={clock}
+      query={query}
+      headingLevel={headingLevel}
+    />
+  );
 }
 
 export interface TaskListLayoutProps {
   view: TaskListView;
   clock: TaskClock;
   query: TaskListQuery;
+  /** See `TaskListProps.headingLevel`. Defaulted so tests can omit it. */
+  headingLevel?: EmptyHeadingLevel;
 }
 
-export function TaskListLayout({ view, clock, query }: TaskListLayoutProps) {
+export function TaskListLayout({
+  view,
+  clock,
+  query,
+  headingLevel = "h2",
+}: TaskListLayoutProps) {
   const [editing, setEditing] = React.useState<Task | null>(null);
 
   const config = VIEWS[view];
@@ -243,6 +312,7 @@ export function TaskListLayout({ view, clock, query }: TaskListLayoutProps) {
                   columnCount={columnCount}
                   title={config.emptyTitle}
                   body={config.emptyBody}
+                  headingLevel={headingLevel}
                 />
               ) : (
                 tasks?.map((task) => (
@@ -270,7 +340,11 @@ export function TaskListLayout({ view, clock, query }: TaskListLayoutProps) {
         {query.isPending ? (
           <TaskCardListSkeleton />
         ) : isEmpty ? (
-          <TaskCardsEmpty title={config.emptyTitle} body={config.emptyBody} />
+          <TaskCardsEmpty
+            title={config.emptyTitle}
+            body={config.emptyBody}
+            headingLevel={headingLevel}
+          />
         ) : (
           tasks?.map((task) => (
             <TaskCard

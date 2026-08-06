@@ -76,15 +76,16 @@ function acknowledged(page: Page, procedure: string): Promise<unknown> {
 }
 
 /**
- * The empty-state line, in whichever presentation is on screen.
+ * The empty-state title, in whichever presentation is on screen.
  *
- * Both are in the DOM, so this needs the visibility filter that `getByRole`
- * gives for free elsewhere. Worth asserting before any "it is not here" count:
- * an empty state means the query *resolved* empty, whereas a count of zero is
- * also what a list still loading looks like.
+ * By role, like everything else here — the title is a real heading, so this
+ * resolves to the visible copy and needs no visibility filter of its own. Worth
+ * asserting before any "it is not here" count: an empty state means the query
+ * *resolved* empty, whereas a count of zero is also what a list still loading
+ * looks like.
  */
 function emptyState(scope: Scope, text: string): Locator {
-  return scope.getByText(text).filter({ visible: true });
+  return scope.getByRole("heading", { name: text, exact: true });
 }
 
 test("a one-off task is created, edited, progressed, finished and deleted", async ({
