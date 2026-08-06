@@ -7,3 +7,138 @@ This version has breaking changes — APIs, conventions, and file structure may 
 This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
 
 <!-- END:nextjs-agent-rules -->
+
+# devtask-pro — codebase context
+
+A private daily task tracker. Every user manages their own work; **nobody sees anybody else's
+tasks, including admins**. One-off tasks with optional deadlines, plus recurring tasks driven by
+Google-Calendar-style repeat rules. Tasks move `Todo → In Progress → Done`, carry a manually-set
+progress percentage, and anything past its deadline surfaces in a derived **Overdue** bucket. A
+separate **Admin** tier governs access — approve/reject signups, suspend accounts, trigger password
+resets — and never sees task data.
+
+Planning lives in `docs/gsd/`. Read `devtask-pro-v1.md` (the decisions and their rationale) before
+changing anything architectural; it is the record of what was decided and why, and re-deciding
+without reading it wastes the discussion that produced it.
+
+## Stack
+
+Next.js 16 (App Router) + React 19 · tRPC 11 · Drizzle over Supabase Postgres · Supabase Auth
+(`@supabase/ssr`) · Tailwind v4 + shadcn/ui primitives · Zod 4 · Vitest + Testing Library ·
+Playwright · `next-themes` · pnpm 11, Node 22.
+
+**Not multi-tenant.** The lightning-kickoff scaffold this derives from generates org-scoped tables;
+devtask-pro deliberately has no `organisation_id`. Rows are owned by a person, scoped on `user_id`.
+
+## The access model — read this before touching data access
+
+This is the one part of the codebase where a plausible-looking change can quietly remove a security
+guarantee.
+
+**Two database paths, and they are not interchangeable:**
+
+- **`withUser(claims, fn)`** (`src/lib/db/rls.ts`) — borrows the connection and demotes it, for one
+  transaction, to the `authenticated` role carrying that user's JWT claims. Postgres then enforces
+  the RLS policies on every statement. **All user-facing reads and writes go through this.**
+- **`dbAdmin`** (`src/lib/db/client.ts`) — connects as the database owner and **bypasses RLS
+  entirely**. Legitimate callers: the reminder job (phase 6), admin account operations on
+  `profiles`, migrations, and `scripts/create-admin.ts`. Nothing else.
+
+**No module exports a bare `db`.** That name is absent on purpose — there is no innocuous import
+that hands you an unscoped connection.
+
+**The rule in one line: no human-facing route may read data it does not own.** Adding something as
+innocent as "show open task counts" to the admin UI requires `dbAdmin` and would undo the guarantee
+the policies exist to give. If you want that, change the decision in `docs/gsd/devtask-pro-v1.md`
+first — do not route around it in code.
+
+`tests/integration/rls-boundary.test.ts` is the proof, not a formality. Keep it passing.
+
+## Database
+
+- **The SQL is authoritative.** `supabase/migrations/*.sql` are hand-written, numbered, and meant to
+  be read. `src/lib/db/schema.ts` is a typed mirror you update by hand. Do **not** author DDL with
+  `drizzle-kit generate` — it cannot express the `security definer` trigger or the RLS policies,
+  which are the parts most worth reviewing.
+- **Every new table needs explicit `GRANT`s in its own migration.** Supabase no longer auto-exposes
+  new `public` entities. Without a grant, correct policies fail with *permission denied* rather than
+  returning zero rows — which reads like a broken policy and is not one. Follow `0003`.
+- **Privilege columns are guarded by a trigger, not a policy.** A `WITH CHECK` that queries the same
+  table recurses. See the long comment in `0003_rls_policies.sql`.
+- One repo module per table under `src/lib/db/repos/`; routes and lib code call the repo, never
+  Drizzle directly.
+
+## tRPC
+
+Procedures compose in a ladder — `publicProcedure` → `protectedProcedure` → `activeProcedure` →
+`adminProcedure`. **`activeProcedure` is the default for feature routers**: a `pending`, `rejected`
+or `suspended` user is authenticated but must not reach application data. Validate every input with
+Zod at the boundary.
+
+## Routing and access gating
+
+`src/proxy.ts` (Next 16 renamed `middleware` → `proxy`; it defaults to the Node.js runtime and the
+`runtime` config option throws). All decision logic is the pure `routeForStatus()` in
+`src/lib/access/status-route.ts` so it is testable without a request — **put new rules there, not in
+the proxy**, and add the path to the always-allowed list if it must be reachable while gated, or you
+will create a redirect loop. There is a fixed-point property test that catches exactly that.
+
+The proxy reads `profiles.status` **live per request**, not from the JWT. Suspending someone does not
+invalidate a token they already hold, so trusting claims would let a suspended user work until it
+expires. The extra round-trip is the accepted cost; do not optimise it away.
+
+## Conventions
+
+- **Business logic lives in `src/lib/**`**, never inline in a component or route handler. Route
+  handlers parse, delegate, serialise.
+- **Validation and predicates go in a lib file, not JSX.** Anything reused, regex-based or
+  multi-condition becomes a pure exported function so it can be unit-tested.
+- **Types and reusable helpers live outside component files.** If you are scrolling past
+  declarations to find the JSX, split them out.
+- **Tests sit next to the code they test** (`foo.ts` ↔ `foo.test.ts`). Only cross-cutting suites live
+  in `tests/`.
+- **No sections inside cards.** A card holds one flat piece of content — no nested bordered boxes, no
+  labelled sub-sections. Split into sibling cards.
+- **Lists on mobile are cards, never tables.** A `<Table>` needs a stacked `md:hidden` card list;
+  both presentations need their own loading and empty states.
+- **Loading states are skeletons that mirror the real layout**, so resolving causes no layout shift.
+  Buttons tied to an in-flight action use the `Button` `loading` prop.
+- **Design tokens only.** No raw hex in `src/components/**` or `src/app/**`, no gradients, no heavy
+  shadows. Hairline `line` borders do the structural work. Every token is defined in both `:root`
+  and `.dark`.
+- Tailwind v4 is CSS-first — there is no `tailwind.config.js` and you should not create one. Note
+  that tokens declared **only** in `@theme inline` are never emitted as real CSS variables, so
+  hand-written `var(--token)` outside a utility resolves to nothing.
+
+## Commands and gates
+
+```bash
+pnpm dev                 # app on :3000
+pnpm db:start            # local Supabase (Docker); Studio :54423, Mailpit :54424
+pnpm db:reset            # re-apply migrations
+pnpm admin:create        # idempotent bootstrap admin from ADMIN_EMAIL/ADMIN_PASSWORD
+```
+
+**Gates — all four must pass before any PR:**
+
+```bash
+pnpm typecheck && pnpm lint && pnpm build && pnpm test
+```
+
+`pnpm test` is unit only. **`pnpm test:integration` needs the live stack** and is excluded from the
+default run so CI stays green without a database — but it is where the access model is actually
+proven, so run it when you touch data access. `pnpm test:e2e` drives Playwright.
+
+Evidence before assertions: run the gates and read the output rather than assuming.
+
+## Branch model
+
+`feature → main`. A session **never merges** — the PR is for a human.
+
+## Pinned versions, and why
+
+- **ESLint stays on 9.x.** ESLint 10 breaks `eslint-plugin-react`
+  (`contextOrFilename.getFilename is not a function`), which `eslint-config-next` depends on.
+- **pnpm build permissions live in `pnpm-workspace.yaml`** (`allowBuilds`), not
+  `pnpm.onlyBuiltDependencies` in `package.json` — pnpm 11 ignores the latter, and without it esbuild
+  never builds and vitest cannot run.

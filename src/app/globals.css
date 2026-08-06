@@ -1,26 +1,255 @@
 @import "tailwindcss";
 
+/* Enables the `dark:` variant against a `.dark` ancestor (set on <html> by a
+   later task's theme provider). Without this line Tailwind v4 emits no `dark:`
+   utilities at all and every dark override silently no-ops. */
+@custom-variant dark (&:is(.dark *));
+
+/* ---------------------------------------------------------------------------
+ * devtask-pro palette — "quiet indigo"
+ *
+ * Flat editorial surfaces: near-white paper in light, deep neutral-indigo
+ * charcoal in dark. Structure comes from hairline `line` borders, never from
+ * shadows or gradients. One accent (a desaturated indigo, hue ~267) carries
+ * every brand moment; `live` (green) and `trip` (red) are reserved for state
+ * so the accent never has to mean "good" or "bad".
+ *
+ * All values are OKLCH so light/dark pairs can be reasoned about by lightness
+ * and chroma rather than eyeballed. Components must reference these by TOKEN
+ * NAME only — a raw colour literal inside src/components/** is a defect.
+ * ------------------------------------------------------------------------- */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: light;
+
+  /* Surfaces */
+  --paper: oklch(1 0 0);
+  --paper-2: oklch(0.968 0.0025 268);
+  --paper-3: oklch(0.938 0.004 268);
+
+  /* Text */
+  --ink: oklch(0.222 0.009 268);
+  --fg-2: oklch(0.442 0.009 268);
+  --fg-3: oklch(0.545 0.009 268);
+  --fg-4: oklch(0.638 0.009 268);
+
+  /* Hairlines */
+  --line: oklch(0.916 0.004 268);
+  --line-2: oklch(0.858 0.005 268);
+
+  /* Accent */
+  --accent: oklch(0.522 0.138 267);
+  --accent-deep: oklch(0.428 0.142 267);
+  --accent-soft: oklch(0.956 0.021 267);
+
+  /* State — destructive */
+  --trip: oklch(0.522 0.172 26);
+  --trip-soft: oklch(0.958 0.022 26);
+
+  /* State — positive / in-progress */
+  --live: oklch(0.518 0.118 160);
+  --live-soft: oklch(0.955 0.03 160);
+
+  /* State — caution */
+  --warn: oklch(0.518 0.126 76);
+  --warn-soft: oklch(0.958 0.042 84);
+
+  /* shadcn bridge — aliases so any shadcn component dropped in inherits
+     this theme instead of shipping its own slate palette. */
+  --background: var(--paper);
+  --foreground: var(--ink);
+  --card: var(--paper);
+  --card-foreground: var(--ink);
+  --primary: var(--accent);
+  --primary-foreground: var(--paper);
+  --accent-foreground: var(--paper);
+  --muted: var(--paper-2);
+  --muted-foreground: var(--fg-3);
+  --border: var(--line);
+  --input: var(--line);
+  --ring: var(--accent);
+
+  /* Radius scale. Declared here as well as in `@theme inline` so
+     `var(--radius-md)` resolves for anything outside a Tailwind utility
+     (inline styles, SVG). Unlayered declarations outrank Tailwind's
+     `@layer theme` copy, so these values are the ones that apply.
+     `rounded-xl` (12px, Tailwind default) is left alone — Card uses it as
+     the one step above controls. */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
 }
 
+.dark {
+  color-scheme: dark;
+
+  /* Surfaces — a neutral charcoal carrying a trace of the accent hue, so the
+     dark theme reads as the same product rather than a generic grey. Not a
+     mechanical inversion: paper never goes to pure black, and the steps
+     between paper/paper-2/paper-3 are tighter than in light mode because
+     surface separation is more visible against a dark ground. */
+  --paper: oklch(0.186 0.008 268);
+  --paper-2: oklch(0.236 0.009 268);
+  --paper-3: oklch(0.286 0.01 268);
+
+  /* Text — capped below pure white to keep long lists comfortable. */
+  --ink: oklch(0.946 0.004 268);
+  --fg-2: oklch(0.802 0.007 268);
+  --fg-3: oklch(0.668 0.009 268);
+  --fg-4: oklch(0.538 0.009 268);
+
+  --line: oklch(0.288 0.008 268);
+  --line-2: oklch(0.368 0.01 268);
+
+  /* Accent inverts DIRECTION as well as lightness: on dark paper the accent
+     must be the light element, so `bg-accent text-paper` stays legible and
+     `accent-deep` (used as text on `accent-soft`, and as the primary hover)
+     becomes the *lighter* of the pair. `accent-soft` becomes a tinted
+     surface rather than a wash. */
+  --accent: oklch(0.722 0.117 268);
+  --accent-deep: oklch(0.828 0.086 268);
+  --accent-soft: oklch(0.302 0.052 268);
+
+  --trip: oklch(0.708 0.148 26);
+  --trip-soft: oklch(0.302 0.062 26);
+
+  --live: oklch(0.742 0.128 160);
+  --live-soft: oklch(0.288 0.055 160);
+
+  --warn: oklch(0.802 0.108 82);
+  --warn-soft: oklch(0.302 0.048 76);
+
+  /* shadcn bridge — same aliases, re-declared so the contract is satisfiable
+     by inspection of this block alone. */
+  --background: var(--paper);
+  --foreground: var(--ink);
+  --card: var(--paper);
+  --card-foreground: var(--ink);
+  --primary: var(--accent);
+  --primary-foreground: var(--paper);
+  --accent-foreground: var(--paper);
+  --muted: var(--paper-2);
+  --muted-foreground: var(--fg-3);
+  --border: var(--line);
+  --input: var(--line);
+  --ring: var(--accent);
+}
+
+/* `inline` is load-bearing: it makes each utility emit the *referenced* var
+   (e.g. `var(--accent)`) rather than a var pointing at the :root-resolved
+   value, so `.dark` re-resolves every utility — including opacity modifiers
+   like `border-trip/40`, which compile to color-mix over the live var. */
 @theme inline {
+  --color-ink: var(--ink);
+  --color-paper: var(--paper);
+  --color-paper-2: var(--paper-2);
+  --color-paper-3: var(--paper-3);
+
+  --color-accent: var(--accent);
+  --color-accent-deep: var(--accent-deep);
+  --color-accent-soft: var(--accent-soft);
+
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+
+  --color-fg-2: var(--fg-2);
+  --color-fg-3: var(--fg-3);
+  --color-fg-4: var(--fg-4);
+
+  --color-trip: var(--trip);
+  --color-trip-soft: var(--trip-soft);
+  --color-live: var(--live);
+  --color-live-soft: var(--live-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+
+  /* shadcn bridge utilities */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* Fonts — system stacks only for now. `next/font` is wired in a later task
+     that owns src/app/layout.tsx; when it lands it overrides these three
+     names on <html> and every `font-sans` / `font-display` / `font-mono`
+     utility picks the webfont up with no component change. */
+  --font-sans:
+    ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji";
+  --font-display:
+    ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  /* Self-referential on purpose: the real values live unlayered in `:root`
+     above, which wins the cascade over Tailwind's `@layer theme` copy. This
+     line is what makes `rounded-sm/md/lg` exist as utilities. */
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* Every element-level rule MUST stay inside `@layer base`. Unlayered element
+   selectors outrank `@layer utilities` under CSS cascade layers and would
+   silently shadow `text-*` / `bg-*` / `border-*` on those elements. */
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: var(--line);
   }
-}
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  html {
+    font-family: var(--font-sans);
+    background: var(--paper);
+    color: var(--ink);
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    min-height: 100vh;
+  }
+
+  /* Headings default to the display face and code to the mono face even when
+     they are not wrapped in <Text>. This also keeps `--font-display` and
+     `--font-mono` referenced, so Tailwind emits them as real custom
+     properties rather than only inlining them into utilities. */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-display);
+  }
+
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family: var(--font-mono);
+  }
+
+  ::selection {
+    background: var(--accent-soft);
+    color: var(--accent-deep);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
 }
