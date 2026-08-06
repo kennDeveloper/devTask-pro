@@ -5,6 +5,7 @@ import {
   PROFILE_FORM_MESSAGES,
   UTC,
   accountStatusLabel,
+  canonicalTimeZone,
   isKnownTimeZone,
   profileDisplayName,
   profileInitials,
@@ -45,10 +46,48 @@ describe("time zone options", () => {
     ).toHaveLength(1);
   });
 
-  it("rejects offsets and legacy aliases", () => {
+  it("rejects offsets and names the tz database does not know", () => {
     expect(isKnownTimeZone("+10:00")).toBe(false);
-    expect(isKnownTimeZone("US/Eastern")).toBe(false);
     expect(isKnownTimeZone("Not/AZone")).toBe(false);
+    expect(canonicalTimeZone("+10:00")).toBeNull();
+    expect(canonicalTimeZone("Australia/Sidney")).toBeNull();
+  });
+
+  /**
+   * The regression guard for a defect that reached main in phase 1.
+   *
+   * `supportedValuesOf` enumerates different spellings on different engines — on
+   * this Node it lists the legacy names and omits the modern ones, while
+   * canonicalising browsers do the reverse. Both name the same zone. A plain set
+   * membership test therefore disagreed across the wire, and a user whose browser
+   * reported "Asia/Kolkata" could not save their settings at all.
+   *
+   * If a future runtime starts listing the modern spellings directly, these still
+   * pass — `canonicalTimeZone` returns the value unchanged when it is already in
+   * the list.
+   */
+  it("accepts a zone this runtime spells differently, and canonicalises it", () => {
+    const modern = ["Asia/Kolkata", "Europe/Kyiv", "Asia/Ho_Chi_Minh"];
+
+    for (const zone of modern) {
+      expect(isKnownTimeZone(zone)).toBe(true);
+
+      const canonical = canonicalTimeZone(zone);
+      expect(canonical).not.toBeNull();
+      // Whatever the spelling in, what comes out is a name this runtime lists —
+      // which is what makes it safe to write to profiles.timezone.
+      expect(timeZoneOptions()).toContain(canonical);
+    }
+  });
+
+  /**
+   * Legacy aliases are normalised rather than refused. Phase 1 rejected them
+   * because neither an offset nor an alias is "an IANA zone we want persisted";
+   * normalising serves that goal more completely, since the column ends up with
+   * the canonical name instead of the request being bounced.
+   */
+  it("normalises a legacy alias instead of rejecting it", () => {
+    expect(canonicalTimeZone("US/Eastern")).toBe("America/New_York");
   });
 });
 
@@ -66,8 +105,25 @@ describe("resolveInitialTimeZone", () => {
   });
 
   it("ignores a browser zone the server would reject", () => {
-    expect(resolveInitialTimeZone(UTC, "US/Eastern")).toBe(UTC);
+    // A name no tz database knows. `US/Eastern` used to stand here, but it is a
+    // real zone under an old spelling and is now normalised rather than refused
+    // — using it would have made this a test of alias handling, not of garbage.
+    expect(resolveInitialTimeZone(UTC, "Mars/Olympus_Mons")).toBe(UTC);
+    expect(resolveInitialTimeZone(UTC, "+10:00")).toBe(UTC);
     expect(resolveInitialTimeZone(UTC, null)).toBe(UTC);
+  });
+
+  /**
+   * The control must show the same string that will end up in the column.
+   * Otherwise a user in India sees "Asia/Kolkata", saves, and finds the field
+   * reading "Asia/Calcutta" next time — which looks like the app changed their
+   * setting behind their back.
+   */
+  it("canonicalises the detected zone so display and storage agree", () => {
+    expect(resolveInitialTimeZone(UTC, "Asia/Kolkata")).toBe(
+      canonicalTimeZone("Asia/Kolkata"),
+    );
+    expect(timeZoneOptions()).toContain(resolveInitialTimeZone(UTC, "Asia/Kolkata"));
   });
 
   it("falls back to UTC when there is no stored value at all", () => {

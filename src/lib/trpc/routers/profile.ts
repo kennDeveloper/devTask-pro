@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { withUser } from "@/lib/db/rls";
 import { profiles, type Profile } from "@/lib/db/schema";
+import { canonicalTimeZone } from "@/lib/profile-form";
 
 import { activeProcedure, protectedProcedure, router } from "../server";
 
@@ -28,10 +29,12 @@ import { activeProcedure, protectedProcedure, router } from "../server";
  * raw offsets like "+10:00" and legacy names like "US/Eastern", neither of
  * which is an IANA zone we want persisted.
  */
-const SUPPORTED_TIME_ZONES = new Set([
-  ...Intl.supportedValuesOf("timeZone"),
-  "UTC",
-]);
+// Validation lives in `src/lib/profile-form.ts` so the browser and this resolver
+// apply exactly one rule. They used not to: both did their own
+// `supportedValuesOf(...).has(value)`, which looks like agreement and is not —
+// the two runtimes enumerate different spellings of the same zones, so a browser
+// reporting "Asia/Kolkata" passed the client check and failed here. See the long
+// note on `canonicalTimeZone`.
 
 /**
  * Input for `profile.update`.
@@ -47,9 +50,16 @@ const SUPPORTED_TIME_ZONES = new Set([
 export const profileUpdateInput = z
   .object({
     displayName: z.string().trim().min(1).max(80).optional(),
+    /**
+     * Transformed, not merely checked. Whatever spelling the client sends, the
+     * column receives the canonical one — so `profiles.timezone` only ever holds
+     * a name this runtime enumerates, and the phase 6 reminder job never has to
+     * wonder whether a stored value is an alias.
+     */
     timezone: z
       .string()
-      .refine((value) => SUPPORTED_TIME_ZONES.has(value), {
+      .transform((value) => canonicalTimeZone(value))
+      .refine((value): value is string => value !== null, {
         message: "Not a recognised IANA time zone",
       })
       .optional(),

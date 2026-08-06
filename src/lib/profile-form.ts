@@ -47,9 +47,60 @@ const KNOWN_TIME_ZONES: ReadonlySet<string> = new Set([
   UTC,
 ]);
 
+/**
+ * The canonical spelling of `value` on this runtime, or `null` if it is not a
+ * zone we will persist.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY A SET MEMBERSHIP TEST IS NOT ENOUGH — this rejected real users
+ * ---------------------------------------------------------------------------
+ * `Intl.supportedValuesOf("timeZone")` does not enumerate the same spellings on
+ * every engine. On this project's Node 22 / ICU 77 it lists the **legacy** names
+ * and omits the modern ones:
+ *
+ *     Asia/Calcutta   listed        Asia/Kolkata               NOT listed
+ *     Europe/Kiev     listed        Europe/Kyiv                NOT listed
+ *     Asia/Saigon     listed        Asia/Ho_Chi_Minh           NOT listed
+ *
+ * Browsers that have shipped the ECMA-402 time-zone-canonicalization change
+ * report the opposite. So a plain `KNOWN_TIME_ZONES.has(value)` gives *different
+ * answers on the server and in the browser*: a user in India whose browser
+ * reports "Asia/Kolkata" passed the client check and was then rejected by the
+ * server, leaving a settings form that could not be submitted. Both spellings
+ * name the same zone and format identically, because the engines share one tz
+ * database even when they disagree about which names to enumerate.
+ *
+ * So: consult the list first (fast, and the common case), and only on a miss ask
+ * the tz database itself to resolve the name. Anything it resolves to a zone in
+ * the list is real, and the **canonical** spelling is what gets returned — so
+ * that is what callers store.
+ *
+ * This deliberately keeps the original rule's *goal* while changing its
+ * mechanism. Phase 1 rejected offsets and aliases because neither is "an IANA
+ * zone we want persisted". Normalising achieves that more completely than
+ * rejecting did: `+10:00` resolves to `+10:00`, which is not in the list, so it
+ * is still refused — while `US/Eastern` is stored as `America/New_York` rather
+ * than bounced. Nothing non-canonical reaches the column either way.
+ */
+export function canonicalTimeZone(value: string): string | null {
+  if (KNOWN_TIME_ZONES.has(value)) return value;
+
+  let resolved: string;
+  try {
+    resolved = new Intl.DateTimeFormat("en-US", {
+      timeZone: value,
+    }).resolvedOptions().timeZone;
+  } catch {
+    // RangeError: not a name this runtime's tz database knows at all.
+    return null;
+  }
+
+  return KNOWN_TIME_ZONES.has(resolved) ? resolved : null;
+}
+
 /** True for a zone the server-side validator will also accept. */
 export function isKnownTimeZone(value: string): boolean {
-  return KNOWN_TIME_ZONES.has(value);
+  return canonicalTimeZone(value) !== null;
 }
 
 /**
@@ -87,19 +138,36 @@ export function detectTimeZone(): string | null {
 /**
  * What the timezone control should start on.
  *
- * A stored zone the user actually chose always wins. Only the untouched
- * default (`UTC`, written by the schema, not by a person) is replaced with the
- * browser's own zone — and only when that zone is one the server will accept,
- * because some browsers still report aliases such as "Asia/Calcutta" that
- * `supportedValuesOf` does not list. Prefilling is a *suggestion*: nothing is
- * written until the form is submitted.
+ * A stored zone the user actually chose always wins. Only the untouched default
+ * (`UTC`, written by the schema, not by a person) is replaced with the browser's
+ * own zone.
+ *
+ * The detected zone is **canonicalised**, not just checked. Engines disagree
+ * about which spelling of a zone to report — a browser may say "Asia/Kolkata"
+ * where this runtime lists "Asia/Calcutta" — and prefilling the browser's
+ * spelling would show the user one name in the control and then store a
+ * different one, so the field appears to change by itself on the next load.
+ * Returning the canonical name makes what is displayed and what is written the
+ * same string.
+ *
+ * (An earlier version of this comment had the direction of that disagreement
+ * backwards, claiming browsers report aliases like "Asia/Calcutta" that
+ * `supportedValuesOf` omits. On this runtime "Asia/Calcutta" is precisely what
+ * the list *does* contain. See `canonicalTimeZone`.)
+ *
+ * Prefilling is a *suggestion*: nothing is written until the form is submitted.
  */
 export function resolveInitialTimeZone(
   stored: string | null | undefined,
   detected: string | null = detectTimeZone(),
 ): string {
   if (stored && stored !== UTC) return stored;
-  if (detected && detected !== UTC && isKnownTimeZone(detected)) return detected;
+
+  if (detected && detected !== UTC) {
+    const canonical = canonicalTimeZone(detected);
+    if (canonical && canonical !== UTC) return canonical;
+  }
+
   return stored || UTC;
 }
 

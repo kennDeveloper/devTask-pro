@@ -216,13 +216,39 @@ describe("profile.update input", () => {
     expect(profileUpdateInput.safeParse({ timezone: "UTC" }).success).toBe(true);
   });
 
-  it("still rejects a raw UTC offset and a legacy alias", () => {
-    // i.e. the "UTC" allowance did not become an `Intl.DateTimeFormat` check,
-    // which accepts both of these.
-    expect(profileUpdateInput.safeParse({ timezone: "US/Eastern" }).success).toBe(
+  it("still rejects a raw UTC offset", () => {
+    // The point this guards: the validator did not become a bare
+    // `Intl.DateTimeFormat` check, which accepts offsets happily. An offset
+    // resolves to itself, is not in the enumerated list, and is refused.
+    expect(profileUpdateInput.safeParse({ timezone: "+10:00" }).success).toBe(
       false,
     );
-    expect(profileUpdateInput.safeParse({ timezone: "GMT" }).success).toBe(false);
+    expect(profileUpdateInput.safeParse({ timezone: "-05:30" }).success).toBe(
+      false,
+    );
+  });
+
+  /**
+   * Changed deliberately in phase 2. These used to be rejected outright, on the
+   * grounds that an alias is not "a zone we want persisted". The column still
+   * never receives one — but because the input is normalised to the canonical
+   * spelling, not because the request is bounced.
+   *
+   * The reason this had to change: `supportedValuesOf` enumerates different
+   * spellings on different engines, so the old membership test rejected
+   * "Asia/Kolkata" on this Node and left users in India unable to save their
+   * settings at all.
+   */
+  it("normalises an alternative spelling instead of rejecting it", () => {
+    for (const [sent, stored] of [
+      ["Asia/Kolkata", "Asia/Calcutta"],
+      ["US/Eastern", "America/New_York"],
+    ] as const) {
+      const result = profileUpdateInput.safeParse({ timezone: sent });
+      expect(result.success).toBe(true);
+      // Note what is asserted: not that it parsed, but what it parsed *to*.
+      expect(result.success && result.data.timezone).toBe(stored);
+    }
   });
 
   it("rejects a plausible-looking but non-existent zone", () => {
