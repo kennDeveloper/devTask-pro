@@ -15,7 +15,11 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 export type AccountStatus = "pending" | "active" | "rejected" | "suspended";
 
-function admin(): SupabaseClient {
+/**
+ * The service-role client. Exported so `tasks.ts` can seed rows with it rather
+ * than building a second one and a second copy of this error message.
+ */
+export function serviceClient(): SupabaseClient {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) {
@@ -44,7 +48,7 @@ export async function createAccount(
   status: AccountStatus = "active",
   role: "member" | "admin" = "member",
 ): Promise<string> {
-  const supabase = admin();
+  const supabase = serviceClient();
 
   const { data, error } = await supabase.auth.admin.createUser({
     email,
@@ -64,7 +68,7 @@ export async function setStatus(
   status: AccountStatus,
   role?: "member" | "admin",
 ): Promise<void> {
-  const supabase = admin();
+  const supabase = serviceClient();
   const patch: Record<string, unknown> = { status };
   if (role) patch.role = role;
   if (status === "active") patch.approved_at = new Date().toISOString();
@@ -78,7 +82,7 @@ export async function setStatus(
 
 /** Read a profile back, for asserting the trigger did its job. */
 export async function getProfile(email: string) {
-  const supabase = admin();
+  const supabase = serviceClient();
   const { data, error } = await supabase
     .from("profiles")
     .select("id, email, status, role, timezone")
@@ -89,7 +93,7 @@ export async function getProfile(email: string) {
 }
 
 export async function deleteAccount(email: string): Promise<void> {
-  const supabase = admin();
+  const supabase = serviceClient();
   const profile = await getProfile(email);
   if (profile?.id) await supabase.auth.admin.deleteUser(profile.id);
 }
