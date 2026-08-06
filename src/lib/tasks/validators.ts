@@ -23,6 +23,7 @@ import { z } from "zod";
 
 import { TASK_STATUSES } from "@/lib/db/schema";
 
+import { occurrenceRefField } from "./occurrence-ref";
 import { PROGRESS_MAX, PROGRESS_MIN } from "./progress";
 
 /** Mirrors `check (length(btrim(title)) between 1 and 200)`. */
@@ -209,12 +210,19 @@ const UPDATABLE_FIELDS: readonly string[] = [
  * and answering it with a no-op success hides that.
  *
  * `id` is validated even though RLS already confines the write to the caller's
- * own rows — a malformed uuid should be a 400 naming the field, not a Postgres
- * cast error surfacing as a 500.
+ * own rows — a malformed reference should be a 400 naming the field, not a
+ * Postgres cast error surfacing as a 500.
+ *
+ * It accepts a row's uuid **or** the `series:<uuid>:<date>` reference a
+ * projected occurrence travels under — wider than `taskIdField` on purpose.
+ * Touching a projection is what materialises it, and routing that through this
+ * same mutation is what keeps the client from needing to know which kind it is
+ * looking at. `task.remove` deliberately stays on `taskIdField`; see the note
+ * there.
  */
 export const taskUpdateInput = z
   .object({
-    id: taskIdField,
+    id: occurrenceRefField,
     title: taskTitleField.optional(),
     ...taskFields,
   })

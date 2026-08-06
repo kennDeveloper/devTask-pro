@@ -32,7 +32,12 @@
 
 import { z } from "zod";
 
-import { isCalendarDate } from "./validators";
+// `parseIsoDate` rather than `isCalendarDate` from `./validators`, which is the
+// same question asked by the neighbouring module: `validators.ts` imports the
+// schema below for `taskUpdateInput`, and importing back would make the two
+// files circular. The calendar module is the bottom of that stack and depends on
+// neither.
+import { parseIsoDate } from "@/lib/recurrence/calendar";
 
 /**
  * The marker. A colon-delimited scheme rather than something denser because it
@@ -99,7 +104,7 @@ export function parseOccurrenceRef(value: string): OccurrenceRef | null {
   const occursOn = body.slice(at + 1);
 
   if (!UUID_PATTERN.test(seriesId)) return null;
-  if (!isCalendarDate(occursOn)) return null;
+  if (!parseIsoDate(occursOn)) return null;
 
   return { kind: "virtual", seriesId, occursOn };
 }

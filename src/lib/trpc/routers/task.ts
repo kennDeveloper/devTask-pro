@@ -1,8 +1,9 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 
-import type { TaskOccurrence } from "@/lib/db/schema";
 import * as occurrences from "@/lib/db/repos/occurrences";
+import * as feed from "@/lib/tasks/feed";
+import { parseOccurrenceRef } from "@/lib/tasks/occurrence-ref";
 import {
   taskIdField,
   taskInput,
@@ -58,11 +59,23 @@ function claimsFor(ctx: { user: { id: string; email?: string } }) {
  *
  * `userId` is dropped: the caller is the owner by construction, so it carries no
  * information and only invites client code to start filtering on it.
+ *
+ * It takes a `ListedOccurrence` rather than a `TaskOccurrence` so that a stored
+ * row and a projection of a repeat rule serialise through **one** function — the
+ * client's `Task` type stays a single shape instead of a union, and the two
+ * kinds are told apart by the `virtual` flag rather than by which procedure
+ * returned them. `fromRow` is what lifts a plain row into that shape.
  */
-function toPublicTask(task: TaskOccurrence) {
+function toPublicTask(task: feed.ListedOccurrence) {
   return {
+    /**
+     * A row's uuid, or the synthetic `series:<uuid>:<date>` reference for an
+     * occurrence nobody has touched yet. See `src/lib/tasks/occurrence-ref.ts`.
+     */
     id: task.id,
     seriesId: task.seriesId,
+    /** True while this is a projection of a rule rather than a stored row. */
+    virtual: task.virtual,
     title: task.title,
     description: task.description,
     occursOn: task.occursOn,
@@ -90,10 +103,34 @@ export type PublicTask = ReturnType<typeof toPublicTask>;
 const nowInput = z.object({ now: z.date().optional() });
 
 export const taskRouter = router({
-  /** Every task the caller owns, newest day first. */
-  list: activeProcedure.query(async ({ ctx }) =>
-    (await occurrences.listAll(claimsFor(ctx))).map(toPublicTask),
-  ),
+  /**
+   * Every task the caller owns, newest day first — **including the occurrences
+   * of their repeat rules**.
+   *
+   * The three reads below all go through `src/lib/tasks/feed.ts`, which merges
+   * the materialised rows with the dates the caller's live series name for the
+   * window on screen. Nothing is written during a read: an occurrence of a
+   * series becomes a row the first time somebody touches it, and until then it
+   * is projected from the rule.
+   *
+   * Materialised rows are unwindowed and projections are not — see the header of
+   * `feed.ts` for why the record and the projection get different treatment.
+   */
+  list: activeProcedure
+    // Optional, unlike its siblings: this procedure took no input at all before
+    // recurrence gave it a window to derive, and `trpc.task.list.useQuery()`
+    // with no argument is the call site in `task-list.tsx`. Optional keeps that
+    // working while still letting a test pin the instant.
+    .input(nowInput.optional())
+    .query(async ({ ctx, input }) =>
+      (
+        await feed.listAllFeed(
+          claimsFor(ctx),
+          todayInZone(ctx.profile.timezone, input?.now ?? new Date()),
+          ctx.profile.timezone,
+        )
+      ).map(toPublicTask),
+    ),
 
   /**
    * The caller's tasks for one calendar day.
@@ -101,7 +138,8 @@ export const taskRouter = router({
    * `occursOn` is optional, and its absence means *today in the caller's own
    * timezone* — resolved here, on the server, from `ctx.profile.timezone`. The
    * client is never asked what day it is: that is criterion 19, and letting the
-   * browser decide is precisely how SSR and hydration end up disagreeing.
+   * browser decide is precisely how SSR and hydration end up disagreeing. The
+   * same is now true of the expansion window, which is derived from that day.
    */
   listForDay: activeProcedure
     .input(nowInput.extend({ occursOn: z.string().optional() }))
@@ -110,9 +148,9 @@ export const taskRouter = router({
         input.occursOn ??
         todayInZone(ctx.profile.timezone, input.now ?? new Date());
 
-      return (await occurrences.listForDay(claimsFor(ctx), day)).map(
-        toPublicTask,
-      );
+      return (
+        await feed.listDayFeed(claimsFor(ctx), day, ctx.profile.timezone)
+      ).map(toPublicTask);
     }),
 
   /**
@@ -122,14 +160,25 @@ export const taskRouter = router({
    * `occurrences.overdueCondition` and is evaluated on read, so marking a task
    * done or moving its deadline forward takes it out of this list on the very
    * next query with no job and no invalidation step (criteria 10 and 11).
+   *
+   * A projected occurrence of a series is judged by the TypeScript half of the
+   * same definition, `isOverdue` — the two halves are asserted to agree in
+   * `src/lib/tasks/overdue.test.ts`.
    */
   listOverdue: activeProcedure
     .input(nowInput)
-    .query(async ({ ctx, input }) =>
-      (
-        await occurrences.listOverdue(claimsFor(ctx), input.now ?? new Date())
-      ).map(toPublicTask),
-    ),
+    .query(async ({ ctx, input }) => {
+      const now = input.now ?? new Date();
+
+      return (
+        await feed.listOverdueFeed(
+          claimsFor(ctx),
+          todayInZone(ctx.profile.timezone, now),
+          now,
+          ctx.profile.timezone,
+        )
+      ).map(toPublicTask);
+    }),
 
   /**
    * Create a one-off task.
@@ -151,32 +200,78 @@ export const taskRouter = router({
         occursOn: task.occursOn ?? todayInZone(ctx.profile.timezone, now ?? new Date()),
       });
 
-      return toPublicTask(created);
+      return toPublicTask(feed.fromRow(created));
     }),
 
   /**
    * Patch a task. Absent fields are left alone; an explicit `null` clears one.
    *
-   * A `null` return from the repo means RLS matched no row — the task belongs to
-   * someone else, or never existed. Both are `NOT_FOUND` rather than `FORBIDDEN`:
-   * telling a caller that a task exists but is not theirs would confirm the
-   * existence of another user's data, which is exactly what this application
-   * promises not to do.
+   * ## This is also where an occurrence is materialised
+   *
+   * `id` accepts either a row's uuid or the synthetic `series:<uuid>:<date>`
+   * reference a projected occurrence travels under. Touching a projection —
+   * moving its slider, changing its status — is what turns it into a row, and
+   * routing that through the *same* mutation is what keeps the client simple:
+   * `use-task-actions.ts` has three mutations rather than four, a row and a card
+   * share one in-flight state, and no component has to know that some
+   * occurrences are not rows yet.
+   *
+   * The branch is here, on the server, where the series can be re-checked. A
+   * reference naming a date the rule does not produce is `NOT_FOUND`, so a
+   * client cannot plant a row on a day its series never names.
+   *
+   * A `null` from either path means nothing matched — the task belongs to
+   * someone else, or never existed, or the series is deleted. All are
+   * `NOT_FOUND` rather than `FORBIDDEN`: telling a caller that a task exists but
+   * is not theirs would confirm the existence of another user's data, which is
+   * exactly what this application promises not to do.
    */
   update: activeProcedure
     .input(taskUpdateInput)
     .mutation(async ({ ctx, input }) => {
       const { id, ...patch } = input;
 
-      const updated = await occurrences.update(claimsFor(ctx), id, patch);
+      const ref = parseOccurrenceRef(id);
+      if (!ref) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Task not found" });
+      }
+
+      const updated =
+        ref.kind === "virtual"
+          ? await feed.materializeOccurrence(
+              claimsFor(ctx),
+              ref,
+              // `occursOn` is deliberately not forwarded: the day of a recurring
+              // occurrence belongs to the rule, and writing a row on some other
+              // date is the thing the rule check above exists to prevent.
+              {
+                title: patch.title,
+                description: patch.description,
+                deadlineAt: patch.deadlineAt,
+                status: patch.status,
+                progressPct: patch.progressPct,
+              },
+              ctx.profile.timezone,
+            )
+          : await occurrences.update(claimsFor(ctx), ref.id, patch);
+
       if (!updated) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Task not found" });
       }
 
-      return toPublicTask(updated);
+      return toPublicTask(feed.fromRow(updated));
     }),
 
-  /** Delete a task. Hard delete — see the plan; `deleted_at` belongs to series. */
+  /**
+   * Delete a task. Hard delete — `deleted_at` belongs to series.
+   *
+   * `taskIdField` is a plain uuid, so a projected occurrence's reference fails
+   * at the Zod boundary. That is deliberate rather than an oversight: deleting
+   * an occurrence nobody has touched would be "skip this one occurrence", which
+   * is out of v1 — and deleting a *materialised* one only makes the rule produce
+   * it again on the next read, so the editor hides Delete for anything with a
+   * `seriesId` and offers the repeat rule instead.
+   */
   remove: activeProcedure
     .input(z.object({ id: taskIdField }))
     .mutation(async ({ ctx, input }) => {

@@ -109,6 +109,7 @@ function task(overrides: Partial<Task> = {}): Task {
   return {
     id: TASK_ID,
     seriesId: null,
+    virtual: false,
     title: "Write the migration",
     description: null,
     occursOn: "2026-08-06",
