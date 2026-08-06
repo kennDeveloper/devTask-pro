@@ -111,6 +111,49 @@ for (const theme of ["light", "dark"] as const) {
 
       await deleteAccount(email);
     });
+
+    /**
+     * The admin tier, phase 5. It needs its own signed-in block rather than an
+     * entry in `SIGNED_IN_ROUTES`, because the two tiers are disjoint: the
+     * account in the test above is a member and is redirected away from
+     * /admin/users, and this one is an admin and is redirected away from /today.
+     *
+     * The list is seeded with one account in each status, so the shot shows
+     * every badge tone and every action button rather than a screen of one row —
+     * which is the whole reason a human looks at these.
+     */
+    test(`admin routes render`, async ({ page }, testInfo) => {
+      await useTheme(page, theme);
+
+      const admin = uniqueEmail("shot-admin");
+      await createAccount(admin, "active", "admin");
+
+      const seeded = [
+        uniqueEmail("shot-acct-pending"),
+        uniqueEmail("shot-acct-active"),
+        uniqueEmail("shot-acct-rejected"),
+        uniqueEmail("shot-acct-suspended"),
+      ];
+      await createAccount(seeded[0], "pending");
+      await createAccount(seeded[1], "active");
+      await createAccount(seeded[2], "rejected");
+      await createAccount(seeded[3], "suspended");
+
+      await signIn(page, admin);
+      await page.waitForURL(/\/admin\/users/);
+
+      await page.waitForLoadState("networkidle");
+      await page.screenshot({
+        path: testInfo.outputPath(
+          `${testInfo.project.name}-${theme}-admin-users.png`,
+        ),
+        fullPage: true,
+      });
+
+      for (const email of [admin, ...seeded]) {
+        await deleteAccount(email);
+      }
+    });
   });
 }
 
