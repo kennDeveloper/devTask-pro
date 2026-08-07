@@ -30,6 +30,7 @@ import {
   isCalendarDate,
   taskDescriptionField,
   taskIdField,
+  taskReminderLeadField,
   taskTitleField,
 } from "./validators";
 
@@ -259,6 +260,13 @@ const seriesFields = {
   description: taskDescriptionField,
   startsOn: seriesStartsOnField,
   deadlineTime: seriesDeadlineTimeField,
+  /**
+   * The template lead. Seeded onto an occurrence at materialisation and owned by
+   * the row thereafter, like every other series field — so editing it here
+   * changes future untouched occurrences only. The same schema the one-off path
+   * uses, imported rather than restated.
+   */
+  reminderLeadMinutes: taskReminderLeadField,
   rule: recurrenceRuleInput,
 };
 

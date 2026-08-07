@@ -37,6 +37,7 @@ function existing(overrides: Partial<Series> = {}): Series {
     description: null,
     startsOn: "2026-01-05",
     deadlineTime: "09:00",
+    reminderLeadMinutes: null,
     rule: {
       freq: "weekly",
       interval: 2,

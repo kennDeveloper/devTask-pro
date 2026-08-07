@@ -195,12 +195,15 @@ export interface CreateOccurrenceInput {
   deadlineAt?: Date | null;
   status?: TaskStatus;
   progressPct?: number;
+  /** Minutes before `deadlineAt` to remind, or null for none. */
+  reminderLeadMinutes?: number | null;
 }
 
 /**
  * Fields a caller may change. Every key is optional, and `undefined` means "leave
- * alone" while `null` means "clear it" — the distinction matters for `description` and
- * `deadlineAt`, where removing a deadline is a real edit and not a no-op.
+ * alone" while `null` means "clear it" — the distinction matters for `description`,
+ * `deadlineAt` and `reminderLeadMinutes`, where removing one is a real edit and not
+ * a no-op.
  */
 export interface UpdateOccurrencePatch {
   title?: string;
@@ -209,6 +212,7 @@ export interface UpdateOccurrencePatch {
   deadlineAt?: Date | null;
   status?: TaskStatus;
   progressPct?: number;
+  reminderLeadMinutes?: number | null;
 }
 
 /**
@@ -309,6 +313,7 @@ export async function create(
         description: input.description ?? null,
         occursOn: input.occursOn,
         deadlineAt: input.deadlineAt ?? null,
+        reminderLeadMinutes: input.reminderLeadMinutes ?? null,
         ...(input.status !== undefined && { status: input.status }),
         ...(input.progressPct !== undefined && {
           progressPct: input.progressPct,
@@ -345,6 +350,9 @@ export async function update(
       ...(patch.deadlineAt !== undefined && { deadlineAt: patch.deadlineAt }),
       ...(patch.status !== undefined && { status: patch.status }),
       ...(patch.progressPct !== undefined && { progressPct: patch.progressPct }),
+      ...(patch.reminderLeadMinutes !== undefined && {
+        reminderLeadMinutes: patch.reminderLeadMinutes,
+      }),
     };
 
     if (Object.keys(values).length === 0) {
@@ -414,6 +422,8 @@ export interface MaterializeOccurrenceInput {
   deadlineAt?: Date | null;
   status?: TaskStatus;
   progressPct?: number;
+  /** Seeded from the series' template lead unless the caller sent one. */
+  reminderLeadMinutes?: number | null;
 }
 
 /**
@@ -467,6 +477,7 @@ export async function materialize(
         description: input.description ?? null,
         occursOn: input.occursOn,
         deadlineAt: input.deadlineAt ?? null,
+        reminderLeadMinutes: input.reminderLeadMinutes ?? null,
         ...touched,
       })
       .onConflictDoUpdate({
@@ -476,6 +487,11 @@ export async function materialize(
           title: input.title,
           description: input.description ?? null,
           deadlineAt: input.deadlineAt ?? null,
+          // Refreshed from what the caller sent, exactly like the deadline above
+          // and for the same reason: the caller resolved it from the template
+          // when they had nothing of their own to send. `status` and
+          // `progress_pct` stay in `touched` because they are the work.
+          reminderLeadMinutes: input.reminderLeadMinutes ?? null,
           ...touched,
         },
       })

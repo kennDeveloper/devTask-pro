@@ -25,6 +25,7 @@ import { TASK_STATUSES } from "@/lib/db/schema";
 
 import { occurrenceRefField } from "./occurrence-ref";
 import { PROGRESS_MAX, PROGRESS_MIN } from "./progress";
+import { REMINDER_LEAD_MAX, REMINDER_LEAD_MIN } from "./reminder-lead";
 
 /** Mirrors `check (length(btrim(title)) between 1 and 200)`. */
 export const TITLE_MAX_LENGTH = 200;
@@ -42,6 +43,8 @@ export const TASK_MESSAGES = {
   statusInvalid: "Choose a status from the list.",
   progressOutOfRange: `Progress runs from ${PROGRESS_MIN} to ${PROGRESS_MAX}.`,
   progressNotWhole: "Use a whole number.",
+  reminderLeadOutOfRange: "Reminders run from the deadline itself to a week ahead.",
+  reminderLeadNotWhole: "Use a whole number of minutes.",
   nothingToUpdate: "Provide at least one field to update.",
 } as const;
 
@@ -168,6 +171,29 @@ export const taskProgressField = z
   .max(PROGRESS_MAX, { error: TASK_MESSAGES.progressOutOfRange })
   .optional();
 
+/**
+ * Minutes before the deadline to send a reminder, or `null` for none.
+ *
+ * Nullable *and* optional, with the two meaning different things exactly as they
+ * do on `taskDescriptionField`: `undefined` leaves the field alone, `null`
+ * switches the reminder off. Collapsing them would make every partial update
+ * silently cancel a reminder the user had set.
+ *
+ * The range mirrors the `check` constraint rather than the preset menu — see
+ * `isReminderLead`. There is deliberately **no** cross-field rule requiring a
+ * deadline: the dialogs disable the control without one, but a lead sitting on a
+ * task whose deadline was later cleared is harmless (`dueReminders` needs both,
+ * and skips on a null deadline), and a refine here would reject a legitimate
+ * patch that sends only the lead.
+ */
+export const taskReminderLeadField = z
+  .number({ error: TASK_MESSAGES.reminderLeadOutOfRange })
+  .int({ error: TASK_MESSAGES.reminderLeadNotWhole })
+  .min(REMINDER_LEAD_MIN, { error: TASK_MESSAGES.reminderLeadOutOfRange })
+  .max(REMINDER_LEAD_MAX, { error: TASK_MESSAGES.reminderLeadOutOfRange })
+  .nullable()
+  .optional();
+
 // ---------------------------------------------------------------------------
 // The schemas the router validates with
 // ---------------------------------------------------------------------------
@@ -179,6 +205,7 @@ const taskFields = {
   deadlineAt: taskDeadlineAtField,
   status: taskStatusField,
   progressPct: taskProgressField,
+  reminderLeadMinutes: taskReminderLeadField,
 };
 
 /**

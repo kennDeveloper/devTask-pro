@@ -85,6 +85,8 @@ function toPublicTask(task: feed.ListedOccurrence) {
     deadlineAt: task.deadlineAt?.toISOString() ?? null,
     status: task.status,
     progressPct: task.progressPct,
+    /** A row's own lead, or — for a projection — its series' template lead. */
+    reminderLeadMinutes: task.reminderLeadMinutes,
     completedAt: task.completedAt?.toISOString() ?? null,
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString(),
@@ -287,6 +289,7 @@ export const taskRouter = router({
                 deadlineAt: patch.deadlineAt,
                 status: patch.status,
                 progressPct: patch.progressPct,
+                reminderLeadMinutes: patch.reminderLeadMinutes,
               },
               ctx.profile.timezone,
             )

@@ -92,6 +92,12 @@ export interface CreateSeriesInput {
   startsOn: string;
   /** `HH:MM` wall clock, or null for "these occurrences have no deadline". */
   deadlineTime?: string | null;
+  /**
+   * The template lead, in minutes before the occurrence's deadline, or null for
+   * no reminder. Copied onto an occurrence at materialisation and owned by the
+   * row thereafter — the same rule `title` and `deadlineTime` follow.
+   */
+  reminderLeadMinutes?: number | null;
   rule: RecurrenceRule;
 }
 
@@ -157,6 +163,7 @@ export async function create(
         description: input.description ?? null,
         startsOn: input.startsOn,
         deadlineTime: input.deadlineTime ?? null,
+        reminderLeadMinutes: input.reminderLeadMinutes ?? null,
         ...ruleValues(input.rule),
       })
       .returning();
@@ -191,6 +198,7 @@ export async function update(
         description: input.description ?? null,
         startsOn: input.startsOn,
         deadlineTime: input.deadlineTime ?? null,
+        reminderLeadMinutes: input.reminderLeadMinutes ?? null,
         ...ruleValues(input.rule),
       })
       .where(and(ownRow(claims, id), live()))
