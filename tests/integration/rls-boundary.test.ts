@@ -5,7 +5,7 @@ import { eq, sql } from "drizzle-orm";
 import { dbAdmin } from "@/lib/db/client";
 import * as profilesRepo from "@/lib/db/repos/profiles";
 import { withUser } from "@/lib/db/rls";
-import { profiles, taskOccurrence } from "@/lib/db/schema";
+import { profiles, taskOccurrence, taskSeries } from "@/lib/db/schema";
 
 /**
  * THE RLS BOUNDARY PROOF.
@@ -415,6 +415,344 @@ describe("task_occurrence — the criterion 6 proof", () => {
     expect(attempt).not.toBeNull();
     expect(attempt!.cause?.message ?? attempt!.message).toMatch(
       /permission denied/i,
+    );
+  });
+});
+
+/**
+ * ===========================================================================
+ * CRITERION 6, AGAIN — this time for `task_series`
+ * ===========================================================================
+ *
+ * `AGENTS.md`: *"When a phase adds a table holding user data, add a block there
+ * too."* Phase 3 adds `task_series`, which holds a title and notes — task data
+ * by any reading — so the same proof has to hold for it: an admin's session sees
+ * zero rows.
+ *
+ * Appended rather than woven into the block above. The `task_occurrence` block
+ * is the criterion-6 proof for the table the product promise is about and stands
+ * on its own; this is the same proof for the table phase 3 introduced, plus the
+ * two things only a real database can demonstrate — that the partial unique
+ * index in 0005 actually rejects a duplicate `(series_id, occurs_on)`, and that
+ * it does *not* catch one-off tasks, which all share `series_id IS NULL`.
+ *
+ * Series are seeded through `dbAdmin` for the reason the block above gives:
+ * creating them through `withUser()` would prove the insert policy and nothing
+ * else, and if that policy were broken the fixtures would silently fail to exist
+ * and every assertion below would pass against an empty table.
+ */
+describe("task_series — the criterion 6 proof for the recurrence table", () => {
+  let seriesOfA: string;
+  let seriesOfB: string;
+
+  /** The minimum a `task_series` row needs to satisfy 0005's CHECKs. */
+  function weekly(userId: string, title: string) {
+    return {
+      userId,
+      title,
+      freq: "weekly" as const,
+      interval: 1,
+      byweekday: ["MO" as const],
+      startsOn: "2026-01-05",
+      deadlineTime: "09:00",
+      endsMode: "never" as const,
+      rrule: "FREQ=WEEKLY;BYDAY=MO",
+    };
+  }
+
+  beforeAll(async () => {
+    const [a] = await dbAdmin
+      .insert(taskSeries)
+      .values(weekly(userA, "A's private rule"))
+      .returning({ id: taskSeries.id });
+
+    const [b] = await dbAdmin
+      .insert(taskSeries)
+      .values(weekly(userB, "B's private rule"))
+      .returning({ id: taskSeries.id });
+
+    seriesOfA = a.id;
+    seriesOfB = b.id;
+  });
+
+  it("returns exactly the caller's own series", async () => {
+    const rows = await withUser({ sub: userA, email: EMAIL_A }, (tx) =>
+      tx.select().from(taskSeries),
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(seriesOfA);
+    expect(rows[0].title).toBe("A's private rule");
+  });
+
+  it("cannot see another user's series, even asked for by primary key", async () => {
+    const rows = await withUser({ sub: userB, email: EMAIL_B }, (tx) =>
+      tx.select().from(taskSeries).where(eq(taskSeries.id, seriesOfA)),
+    );
+
+    expect(rows).toHaveLength(0);
+  });
+
+  /**
+   * CRITERION 6 ITSELF, for this table. The admin account is
+   * `role = 'admin', status = 'active'` — the tier that approves signups and
+   * suspends accounts. It sees none of anyone else's repeat rules, because
+   * `role` is an application concept and RLS scopes on `auth.uid()`.
+   */
+  it("an ADMIN session reading task_series returns ZERO rows", async () => {
+    const all = await withUser({ sub: adminUser, email: EMAIL_ADMIN }, (tx) =>
+      tx.select().from(taskSeries),
+    );
+    expect(all).toHaveLength(0);
+
+    for (const id of [seriesOfA, seriesOfB]) {
+      const targeted = await withUser({ sub: adminUser }, (tx) =>
+        tx.select().from(taskSeries).where(eq(taskSeries.id, id)),
+      );
+      expect(targeted).toHaveLength(0);
+    }
+  });
+
+  it("dbAdmin still sees every series — the escalation path works", async () => {
+    const ids = (await dbAdmin.select().from(taskSeries)).map((r) => r.id);
+    expect(ids).toEqual(expect.arrayContaining([seriesOfA, seriesOfB]));
+  });
+
+  it("a write aimed at someone else's series changes nothing", async () => {
+    await withUser({ sub: userB, email: EMAIL_B }, (tx) =>
+      tx
+        .update(taskSeries)
+        .set({ title: "hacked" })
+        .where(eq(taskSeries.id, seriesOfA)),
+    );
+
+    const [row] = await dbAdmin
+      .select()
+      .from(taskSeries)
+      .where(eq(taskSeries.id, seriesOfA));
+    expect(row.title).toBe("A's private rule");
+  });
+
+  it("a soft delete aimed at someone else's series marks nothing", async () => {
+    // The application deletes by stamping `deleted_at`, so this is the shape the
+    // real attack would take — an UPDATE, not a DELETE.
+    await withUser({ sub: userB, email: EMAIL_B }, (tx) =>
+      tx
+        .update(taskSeries)
+        .set({ deletedAt: new Date() })
+        .where(eq(taskSeries.id, seriesOfA)),
+    );
+
+    const [row] = await dbAdmin
+      .select()
+      .from(taskSeries)
+      .where(eq(taskSeries.id, seriesOfA));
+    expect(row.deletedAt).toBeNull();
+  });
+
+  it("a hard delete aimed at someone else's series removes nothing", async () => {
+    await withUser({ sub: userB, email: EMAIL_B }, (tx) =>
+      tx.delete(taskSeries).where(eq(taskSeries.id, seriesOfA)),
+    );
+
+    const rows = await dbAdmin
+      .select()
+      .from(taskSeries)
+      .where(eq(taskSeries.id, seriesOfA));
+    expect(rows).toHaveLength(1);
+  });
+
+  /** The `with check` on `task_series_insert_own`. */
+  it("cannot create a series owned by somebody else", async () => {
+    const attempt = await withUser({ sub: userB, email: EMAIL_B }, (tx) =>
+      tx.insert(taskSeries).values(weekly(userA, "planted")),
+    ).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+
+    expect(attempt).not.toBeNull();
+
+    const rows = await dbAdmin
+      .select()
+      .from(taskSeries)
+      .where(eq(taskSeries.userId, userA));
+    expect(rows).toHaveLength(1);
+  });
+
+  /** The `with check` on `task_series_update_own`. */
+  it("cannot give a series away by re-pointing user_id", async () => {
+    await withUser({ sub: userA, email: EMAIL_A }, (tx) =>
+      tx
+        .update(taskSeries)
+        .set({ userId: userB })
+        .where(eq(taskSeries.id, seriesOfA)),
+    ).catch(() => {
+      /* rejection is one acceptable outcome; a silent no-op is the other */
+    });
+
+    const [row] = await dbAdmin
+      .select()
+      .from(taskSeries)
+      .where(eq(taskSeries.id, seriesOfA));
+    expect(row.userId).toBe(userA);
+  });
+
+  /**
+   * The regression guard 0004 wrote and 0005 inherits.
+   *
+   * `postgres` used to carry a default privilege granting TRUNCATE to `anon` and
+   * `authenticated` on every new table in `public`, and TRUNCATE does not
+   * consult row level security. 0004 revoked the default, which is why
+   * `task_series` — created after it — starts with an empty ACL. If a future
+   * migration reintroduces a blanket grant, this fails.
+   */
+  it("an authenticated session cannot TRUNCATE the table", async () => {
+    const attempt = await withUser({ sub: userA, email: EMAIL_A }, (tx) =>
+      tx.execute(sql`truncate table public.task_series cascade`),
+    ).then(
+      () => null,
+      (e: unknown) => e as Error & { cause?: { message?: string } },
+    );
+
+    expect(attempt).not.toBeNull();
+    expect(attempt!.cause?.message ?? attempt!.message).toMatch(
+      /permission denied/i,
+    );
+
+    const rows = await dbAdmin.select().from(taskSeries);
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("an anonymous session cannot read the table at all", async () => {
+    // `anon` holds no grant, so this fails on permission rather than returning
+    // an empty set — a different failure mode from RLS filtering, and the one
+    // that proves the grant block in 0005 is doing its job.
+    const attempt = await dbAdmin
+      .execute(sql`set local role anon; select count(*) from public.task_series`)
+      .then(
+        () => null,
+        (e: unknown) => e as Error & { cause?: { message?: string } },
+      );
+
+    expect(attempt).not.toBeNull();
+    expect(attempt!.cause?.message ?? attempt!.message).toMatch(
+      /permission denied/i,
+    );
+  });
+});
+
+/**
+ * ===========================================================================
+ * THE PARTIAL UNIQUE INDEX — phase 3's criterion 7
+ * ===========================================================================
+ *
+ * *"The partial unique index actually prevents a duplicate `(series_id,
+ * occurs_on)` — asserted, not assumed."*
+ *
+ * Both halves matter. The index is what makes `materialize()`'s ON CONFLICT a
+ * single statement that cannot lose a race to itself; the `where series_id is
+ * not null` is what stops it catching one-off tasks, which all share a NULL
+ * `series_id` and are routinely created several to a day.
+ */
+describe("task_occurrence_series_day_uniq", () => {
+  let series: string;
+
+  beforeAll(async () => {
+    const [row] = await dbAdmin
+      .insert(taskSeries)
+      .values({
+        userId: userA,
+        title: "Uniqueness fixture",
+        freq: "daily",
+        interval: 1,
+        startsOn: "2026-02-01",
+        endsMode: "never",
+        rrule: "FREQ=DAILY",
+      })
+      .returning({ id: taskSeries.id });
+
+    series = row.id;
+  });
+
+  it("rejects a second occurrence of the same series on the same day", async () => {
+    await dbAdmin.insert(taskOccurrence).values({
+      userId: userA,
+      seriesId: series,
+      title: "First touch",
+      occursOn: "2026-02-02",
+    });
+
+    const attempt = await dbAdmin
+      .insert(taskOccurrence)
+      .values({
+        userId: userA,
+        seriesId: series,
+        title: "Second touch",
+        occursOn: "2026-02-02",
+      })
+      .then(
+        () => null,
+        (e: unknown) => e as Error & { cause?: { message?: string } },
+      );
+
+    expect(attempt).not.toBeNull();
+    expect(attempt!.cause?.message ?? attempt!.message).toMatch(
+      /task_occurrence_series_day_uniq|duplicate key/i,
+    );
+  });
+
+  it("still allows the same series on a different day", async () => {
+    await expect(
+      dbAdmin.insert(taskOccurrence).values({
+        userId: userA,
+        seriesId: series,
+        title: "Another day",
+        occursOn: "2026-02-03",
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  /**
+   * The `where` clause, doing its job. Without it every one-off would share the
+   * key `(NULL, occurs_on)` — which NULLs would in fact keep distinct, but only
+   * by relying on that. The predicate says the intent instead of depending on it,
+   * and this is the assertion that would catch its removal.
+   */
+  it("does NOT catch one-off tasks sharing a day", async () => {
+    for (const title of ["One-off A", "One-off B", "One-off C"]) {
+      await expect(
+        dbAdmin.insert(taskOccurrence).values({
+          userId: userA,
+          title,
+          occursOn: "2026-02-04",
+        }),
+      ).resolves.toBeDefined();
+    }
+  });
+
+  /**
+   * The FK 0004 deferred and 0005 added. A `series_id` pointing at nothing would
+   * be an occurrence with no rule behind it — invisible in every list, because
+   * the feed builds projections from series rows.
+   */
+  it("refuses an occurrence pointing at a series that does not exist", async () => {
+    const attempt = await dbAdmin
+      .insert(taskOccurrence)
+      .values({
+        userId: userA,
+        seriesId: "00000000-0000-4000-8000-000000000000",
+        title: "Orphan",
+        occursOn: "2026-02-05",
+      })
+      .then(
+        () => null,
+        (e: unknown) => e as Error & { cause?: { message?: string } },
+      );
+
+    expect(attempt).not.toBeNull();
+    expect(attempt!.cause?.message ?? attempt!.message).toMatch(
+      /task_occurrence_series_fk|foreign key/i,
     );
   });
 });

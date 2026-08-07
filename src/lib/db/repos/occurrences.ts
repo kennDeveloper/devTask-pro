@@ -1,4 +1,15 @@
-import { and, asc, desc, eq, isNotNull, lt, ne, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  lt,
+  ne,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 
 import { withUser, type UserClaims } from "@/lib/db/rls";
 import {
@@ -264,6 +275,125 @@ export async function update(
       .returning();
 
     return rows[0] ?? null;
+  });
+}
+
+/**
+ * Every materialised occurrence belonging to any of `seriesIds`.
+ *
+ * The other half of a recurring read: the rule says which dates exist, this says
+ * which of them somebody has already touched. `src/lib/tasks/feed.ts` merges the
+ * two, materialised winning.
+ *
+ * **Not windowed**, deliberately, and the asymmetry is the point. A virtual
+ * occurrence is a projection and needs bounds; a row exists because a person
+ * acted on that date, and it should not vanish from a list because it aged out
+ * of a range. It is also what keeps a row on a date the *current* rule no longer
+ * names visible at all — which is acceptance criterion 15.
+ *
+ * An empty `seriesIds` short-circuits rather than issuing `in ()`: Drizzle
+ * renders that as a false constant, which is correct but still a round trip.
+ */
+export async function listForSeries(
+  claims: UserClaims,
+  seriesIds: readonly string[],
+): Promise<TaskOccurrence[]> {
+  if (seriesIds.length === 0) return [];
+
+  return withUser(claims, async (tx) =>
+    tx
+      .select()
+      .from(taskOccurrence)
+      .where(
+        and(
+          ownedBy(claims),
+          inArray(taskOccurrence.seriesId, [...seriesIds]),
+        ),
+      )
+      .orderBy(asc(taskOccurrence.occursOn)),
+  );
+}
+
+/** The values `materialize` writes when an occurrence is first touched. */
+export interface MaterializeOccurrenceInput {
+  seriesId: string;
+  /** The date the rule names. Part of the conflict target. */
+  occursOn: string;
+  /** Copied from the series at touch time, then owned by the row. */
+  title: string;
+  description?: string | null;
+  /** Already resolved from (occurs_on + deadline_time) in the owner's zone. */
+  deadlineAt?: Date | null;
+  status?: TaskStatus;
+  progressPct?: number;
+}
+
+/**
+ * Write the row for one occurrence of a series — the whole of "materialise on
+ * touch".
+ *
+ * ## Why this is an upsert and not a select-then-insert
+ *
+ * `task_occurrence_series_day_uniq` (0005) is a *partial* unique index on
+ * `(series_id, occurs_on) where series_id is not null`, and this is what it
+ * exists for: `on conflict … do update` makes first-touch a single statement
+ * that cannot lose a race to itself. A read-then-write would have a window
+ * between the two in which a second request could insert, and the loser would
+ * surface as a 23505 the user would read as "saving failed".
+ *
+ * `targetWhere` is required, not decoration — Postgres has to be given the
+ * index's own predicate before it will infer a partial index as the conflict
+ * target.
+ *
+ * ## What the conflict branch does and does not write
+ *
+ * Only the fields the caller actually supplied. A row that already exists is a
+ * row somebody has worked on, so its `status` and `progress_pct` are the most
+ * valuable things on it — an upsert that reset them to the series template on
+ * every touch would destroy exactly what acceptance criteria 14 and 15 protect.
+ * The title and notes are refreshed from the template, which is the same rule
+ * `update` follows for a one-off: what the caller sent wins, what they omitted
+ * is left alone.
+ *
+ * `completed_at` and `updated_at` are absent for the reason in the module
+ * header: both are trigger-maintained.
+ */
+export async function materialize(
+  claims: UserClaims,
+  input: MaterializeOccurrenceInput,
+): Promise<TaskOccurrence> {
+  return withUser(claims, async (tx) => {
+    const touched = {
+      ...(input.status !== undefined && { status: input.status }),
+      ...(input.progressPct !== undefined && {
+        progressPct: input.progressPct,
+      }),
+    };
+
+    const rows = await tx
+      .insert(taskOccurrence)
+      .values({
+        userId: claims.sub,
+        seriesId: input.seriesId,
+        title: input.title,
+        description: input.description ?? null,
+        occursOn: input.occursOn,
+        deadlineAt: input.deadlineAt ?? null,
+        ...touched,
+      })
+      .onConflictDoUpdate({
+        target: [taskOccurrence.seriesId, taskOccurrence.occursOn],
+        targetWhere: sql`${taskOccurrence.seriesId} is not null`,
+        set: {
+          title: input.title,
+          description: input.description ?? null,
+          deadlineAt: input.deadlineAt ?? null,
+          ...touched,
+        },
+      })
+      .returning();
+
+    return rows[0];
   });
 }
 

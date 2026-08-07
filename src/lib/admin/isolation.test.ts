@@ -174,6 +174,13 @@ describe("criterion 9 — dbAdmin appears only where it is sanctioned", () => {
     // Their own tests.
     "src/lib/db/repos/profiles.test.ts",
     "tests/integration/rls-boundary.test.ts",
+    // Phase 3's series suite, on the same sanction as the boundary spec above:
+    // it writes through `withUser()` and reads back with `dbAdmin` to prove the
+    // write landed where the policy says it should. Seeding privileged is the
+    // point — fixtures created through `withUser()` would prove only the insert
+    // policy, and if that policy were broken they would silently fail to exist
+    // and every assertion after them would pass against an empty table.
+    "tests/integration/series.test.ts",
   ]);
 
   /**

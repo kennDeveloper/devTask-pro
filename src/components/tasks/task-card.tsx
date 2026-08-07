@@ -8,6 +8,7 @@ import { isOverdue } from "@/lib/tasks/overdue";
 import { cn } from "@/lib/utils";
 
 import { ProgressControl } from "./progress-control";
+import { RepeatButton } from "./repeat-button";
 import { StatusControl } from "./status-control";
 import { dayLabel, formatDeadline } from "./task-presentation";
 import { useTaskActions } from "./use-task-actions";
@@ -37,9 +38,17 @@ export interface TaskCardProps {
   /** `/today` scopes to one day, so repeating it on every card is noise. */
   showDay: boolean;
   onEdit: (task: Task) => void;
+  /** Opens the repeat-rule editor. Only reachable on a recurring occurrence. */
+  onEditSeries: (seriesId: string) => void;
 }
 
-export function TaskCard({ task, clock, showDay, onEdit }: TaskCardProps) {
+export function TaskCard({
+  task,
+  clock,
+  showDay,
+  onEdit,
+  onEditSeries,
+}: TaskCardProps) {
   const { update } = useTaskActions();
   const overdue = isOverdue(task, clock.now);
 
@@ -56,9 +65,21 @@ export function TaskCard({ task, clock, showDay, onEdit }: TaskCardProps) {
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <Text variant="body-sm" weight="medium" className="block">
-            {task.title}
-          </Text>
+          {/* The same one extra control as `task-row.tsx`, under the same
+              accessible name — `Repeat rule of <title>`. Both presentations are
+              always mounted, so a divergence here is a silent e2e break on
+              whichever project renders the other one. */}
+          <div className="flex items-center gap-1.5">
+            <Text variant="body-sm" weight="medium" className="block">
+              {task.title}
+            </Text>
+            {task.seriesId && (
+              <RepeatButton
+                title={task.title}
+                onClick={() => onEditSeries(task.seriesId!)}
+              />
+            )}
+          </div>
           {task.description && (
             <Text variant="caption" className="mt-1 block">
               {task.description}

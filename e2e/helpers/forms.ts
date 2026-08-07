@@ -37,6 +37,36 @@ export async function fillForm(
   }).toPass({ timeout: 15_000 });
 }
 
+/**
+ * Choose from a set of `<select>`s and prove the choices survived hydration.
+ *
+ * The same hazard `fillForm` exists for, on a control `fill()` cannot touch. A
+ * controlled `<select>` set between the HTML arriving and React hydrating takes
+ * the raw DOM value and dispatches a `change` nobody is listening to yet;
+ * component state never moves, and the first controlled render puts the old
+ * option back.
+ *
+ * The symptom is *worse* than an empty field. Nothing errors — the form submits
+ * plausible values from a rule nobody chose — so the assertion that fails is
+ * several steps later, about data that was written perfectly correctly. That is
+ * a long way to walk back from.
+ *
+ * `AGENTS.md` states the rule as "never a bare `fill()`". This is the same rule;
+ * `<select>` just has a different verb.
+ */
+export async function selectForm(
+  fields: Array<readonly [Locator, string]>,
+): Promise<void> {
+  await expect(async () => {
+    for (const [field, value] of fields) {
+      await field.selectOption(value);
+    }
+    for (const [field, value] of fields) {
+      await expect(field).toHaveValue(value, { timeout: 250 });
+    }
+  }).toPass({ timeout: 15_000 });
+}
+
 /** Sign in through the real form. Leaves navigation to the caller to assert. */
 export async function signIn(
   page: Page,

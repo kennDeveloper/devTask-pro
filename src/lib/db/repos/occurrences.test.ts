@@ -88,6 +88,9 @@ class QueryRecorder {
   returning(...args: unknown[]) {
     return this.record("returning", args);
   }
+  onConflictDoUpdate(...args: unknown[]) {
+    return this.record("onConflictDoUpdate", args);
+  }
 
   then<TResult1 = unknown, TResult2 = never>(
     onFulfilled?:
@@ -469,5 +472,132 @@ describe("remove", () => {
     arm([]);
     await expect(occurrences.remove(CLAIMS, TASK_ID)).resolves.toBe(false);
     expect(tx.chain).toContain("returning");
+  });
+});
+
+const SERIES_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+describe("listForSeries", () => {
+  it("scopes to the caller and to the given series", async () => {
+    await occurrences.listForSeries(CLAIMS, [SERIES_ID]);
+
+    const { sql, params } = shape(tx.argOf("where"));
+    expect(sql).toBe(
+      '("task_occurrence"."user_id" = ? and "task_occurrence"."series_id" in (?))',
+    );
+    expect(params).toEqual([USER_ID, SERIES_ID]);
+  });
+
+  /**
+   * The asymmetry that keeps criterion 15 working: a virtual occurrence is a
+   * projection and needs bounds, but a row exists because a person acted on that
+   * date. Windowing here would hide a row on a date the current rule no longer
+   * names — which is precisely the row the criterion says must survive.
+   */
+  it("is not windowed by date", async () => {
+    await occurrences.listForSeries(CLAIMS, [SERIES_ID]);
+    expect(shape(tx.argOf("where")).sql).not.toContain("occurs_on\" >");
+    expect(shape(tx.argOf("where")).sql).not.toContain("occurs_on\" <");
+  });
+
+  it("short-circuits on an empty list rather than issuing `in ()`", async () => {
+    await expect(occurrences.listForSeries(CLAIMS, [])).resolves.toEqual([]);
+    expect(withUser).not.toHaveBeenCalled();
+  });
+});
+
+describe("materialize", () => {
+  const input = {
+    seriesId: SERIES_ID,
+    occursOn: "2026-01-19",
+    title: "Team standup",
+    deadlineAt: new Date("2026-01-19T09:00:00.000Z"),
+  };
+
+  it("upserts against the partial unique index from 0005", async () => {
+    // One statement, so first-touch cannot lose a race to itself. `targetWhere`
+    // is required rather than decorative: Postgres will not infer a *partial*
+    // index as a conflict target without being given its predicate.
+    arm([{ id: TASK_ID }]);
+    await occurrences.materialize(CLAIMS, input);
+
+    expect(tx.chain).toEqual([
+      "insert",
+      "values",
+      "onConflictDoUpdate",
+      "returning",
+    ]);
+
+    const config = tx.argOf("onConflictDoUpdate") as {
+      target: unknown[];
+      targetWhere: unknown;
+    };
+    expect(config.target).toHaveLength(2);
+    expect(shape(config.targetWhere).sql).toBe(
+      '"task_occurrence"."series_id" is not null',
+    );
+  });
+
+  it("takes the owner from the claims", async () => {
+    arm([{ id: TASK_ID }]);
+    await occurrences.materialize(CLAIMS, {
+      ...input,
+      userId: OTHER_USER_ID,
+    } as never);
+
+    expect(tx.argOf("values")).toMatchObject({
+      userId: USER_ID,
+      seriesId: SERIES_ID,
+      occursOn: "2026-01-19",
+    });
+  });
+
+  /**
+   * Acceptance criteria 14 and 15. A row that already exists is a row somebody
+   * has worked on, and an upsert that reset status and progress to the series
+   * template on every touch would destroy the more valuable half of it.
+   */
+  it("does not reset status or progress when the caller did not send them", async () => {
+    arm([{ id: TASK_ID }]);
+    await occurrences.materialize(CLAIMS, input);
+
+    const set = tx.argOf("onConflictDoUpdate") as { set: Record<string, unknown> };
+    expect(set.set).not.toHaveProperty("status");
+    expect(set.set).not.toHaveProperty("progressPct");
+  });
+
+  it("writes status and progress on both branches when they are the touch", async () => {
+    arm([{ id: TASK_ID }]);
+    await occurrences.materialize(CLAIMS, {
+      ...input,
+      status: "in_progress",
+      progressPct: 60,
+    });
+
+    expect(tx.argOf("values")).toMatchObject({
+      status: "in_progress",
+      progressPct: 60,
+    });
+    const config = tx.argOf("onConflictDoUpdate") as {
+      set: Record<string, unknown>;
+    };
+    expect(config.set).toMatchObject({
+      status: "in_progress",
+      progressPct: 60,
+    });
+  });
+
+  it("never writes completed_at or updated_at — both are trigger-maintained", async () => {
+    arm([{ id: TASK_ID }]);
+    await occurrences.materialize(CLAIMS, { ...input, status: "done" });
+
+    const values = tx.argOf("values") as Record<string, unknown>;
+    const config = tx.argOf("onConflictDoUpdate") as {
+      set: Record<string, unknown>;
+    };
+    for (const bag of [values, config.set]) {
+      expect(bag).not.toHaveProperty("completedAt");
+      expect(bag).not.toHaveProperty("updatedAt");
+    }
   });
 });

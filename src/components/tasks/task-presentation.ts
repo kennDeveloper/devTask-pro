@@ -20,13 +20,14 @@
  * arrives as an argument, from `TaskClock`, which the server resolved.
  */
 
-import { addDaysToIsoDate } from "@/lib/time/day-boundary";
 import {
-  ISO_DATE_PATTERN,
-  toIsoDate,
-  wallClockInZone,
-  zoneOffsetMs,
-} from "@/lib/time/user-tz";
+  addDaysToIsoDate,
+  instantFromWallClock,
+} from "@/lib/time/day-boundary";
+import { DATE_LOCALE, formatCalendarDate } from "@/lib/time/format-date";
+import { toIsoDate, wallClockInZone } from "@/lib/time/user-tz";
+
+export { formatCalendarDate };
 
 /**
  * Pinned so the server and the browser produce byte-identical strings.
@@ -34,8 +35,11 @@ import {
  * `en-GB` rather than `en-US` for its day-first, unambiguous short form
  * ("6 Aug 2026") and its 24-hour clock — a deadline is a precise moment and
  * "11:00 PM" is one more thing to parse than "23:00".
+ *
+ * Shared with `src/lib/time/format-date.ts`, which is where the calendar-date
+ * formatter moved when `src/lib/recurrence/labels.ts` became its second caller.
  */
-const LOCALE = "en-GB";
+const LOCALE = DATE_LOCALE;
 
 // ---------------------------------------------------------------------------
 // Columns
@@ -100,22 +104,13 @@ export function taskColumns(showDay: boolean): readonly TaskColumn[] {
 // Calendar days (`occurs_on` — a date with no time and no zone)
 // ---------------------------------------------------------------------------
 
-const CALENDAR_FORMAT = new Intl.DateTimeFormat(LOCALE, {
-  // UTC is an arithmetic vehicle here, not a claim about anybody's zone: the
-  // value being formatted is a bare calendar square, and building it at UTC
-  // midnight is the only way to render it without a zone shifting it a day.
-  timeZone: "UTC",
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-});
-
-/** `"2026-08-06"` → `"6 Aug 2026"`. Unparseable input is passed through. */
-export function formatCalendarDate(isoDate: string): string {
-  if (!ISO_DATE_PATTERN.test(isoDate)) return isoDate;
-  const [year, month, day] = isoDate.split("-").map(Number);
-  return CALENDAR_FORMAT.format(new Date(Date.UTC(year, month - 1, day)));
-}
+/**
+ * `formatCalendarDate` is re-exported from `src/lib/time/format-date.ts` at the
+ * top of this file. It lives there because `src/lib/recurrence/labels.ts` needs
+ * it too, and a `src/lib` module importing a component directory would point the
+ * dependency arrow backwards. The re-export keeps every existing caller — and
+ * every existing test — importing it from here.
+ */
 
 /**
  * The day a task sits on, named the way a person would name it.
@@ -239,6 +234,12 @@ export function instantToLocalInput(
  * candidate resolves to the transition instant, which is the nearest real moment
  * to what was asked for — the best available answer, and one the user can see
  * and correct in the field they just typed into.
+ *
+ * The arithmetic itself moved to `instantFromWallClock` in
+ * `src/lib/time/day-boundary.ts` when the recurrence engine needed the same
+ * conversion for a series' `deadline_time` (criterion 20). This function now
+ * owns only the parsing and the `null` contract; the offset resolution has one
+ * implementation.
  */
 export function localInputToInstant(
   local: string,
@@ -249,12 +250,6 @@ export function localInputToInstant(
 
   const [year, month, day, hour, minute] = match.slice(1).map(Number);
 
-  // The wall-clock reading, deliberately misread as a UTC instant. It is wrong
-  // by exactly the zone's offset — the quantity being solved for.
-  const asIfUtc = Date.UTC(year, month - 1, day, hour, minute);
-  const firstGuess = asIfUtc - zoneOffsetMs(timeZone, new Date(asIfUtc));
-  const refined = asIfUtc - zoneOffsetMs(timeZone, new Date(firstGuess));
-
-  const instant = new Date(refined);
+  const instant = instantFromWallClock(timeZone, { year, month, day }, hour, minute);
   return Number.isNaN(instant.getTime()) ? null : instant.toISOString();
 }

@@ -77,6 +77,23 @@ export function TaskDialog({ open, onClose, clock, task = null }: TaskDialogProp
   const saving = task ? update.isPending : create.isPending;
   const mutationError = task ? update.error : create.error;
 
+  /**
+   * A recurring occurrence is edited here like any other task, with two
+   * differences that both follow from the day belonging to the rule rather than
+   * to the row:
+   *
+   * - **The Day control is read-only.** Moving one occurrence to another date
+   *   would put a row on a day its series never names; the server refuses that
+   *   for an untouched occurrence, and the control should not offer what the
+   *   server will not do.
+   * - **Delete is not offered.** Deleting an untouched occurrence would be "skip
+   *   this one occurrence", which is out of v1; deleting a materialised one only
+   *   makes the rule produce it again on the next read, and a delete that does
+   *   not stick reads as a bug. The repeat button on the row is the way to
+   *   change what a series produces.
+   */
+  const recurring = Boolean(task?.seriesId);
+
   function setValue<K extends keyof TaskFormValues>(
     field: K,
     value: TaskFormValues[K],
@@ -142,12 +159,14 @@ export function TaskDialog({ open, onClose, clock, task = null }: TaskDialogProp
       title={task ? "Edit task" : "New task"}
       description={
         task
-          ? "Changes save to this task only."
+          ? recurring
+            ? "Changes save to this occurrence only — the rest of the series is untouched."
+            : "Changes save to this task only."
           : "Only you can see this. Everything but the title is optional."
       }
       footer={
         <>
-          {task && (
+          {task && !recurring && (
             <Button
               variant="destructive"
               loading={remove.isPending}
@@ -216,14 +235,25 @@ export function TaskDialog({ open, onClose, clock, task = null }: TaskDialogProp
         </Field>
 
         <div className="grid gap-5 sm:grid-cols-2">
-          <Field label="Day" htmlFor={`${fieldId}-occursOn`} error={errors.occursOn}>
+          <Field
+            label="Day"
+            htmlFor={`${fieldId}-occursOn`}
+            error={errors.occursOn}
+            hint={recurring ? "Set by the repeat rule." : undefined}
+          >
             <Input
               id={`${fieldId}-occursOn`}
               type="date"
               value={values.occursOn}
+              readOnly={recurring}
+              disabled={recurring}
               aria-invalid={errors.occursOn ? true : undefined}
               aria-describedby={
-                errors.occursOn ? `${fieldId}-occursOn-error` : undefined
+                errors.occursOn
+                  ? `${fieldId}-occursOn-error`
+                  : recurring
+                    ? `${fieldId}-occursOn-hint`
+                    : undefined
               }
               onChange={(event) => setValue("occursOn", event.target.value)}
             />

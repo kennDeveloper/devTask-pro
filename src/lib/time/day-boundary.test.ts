@@ -4,6 +4,7 @@ import { UTC } from "@/lib/profile-form";
 import {
   addDaysToIsoDate,
   dayRangeInZone,
+  instantFromWallClock,
   startOfDayInZone,
 } from "@/lib/time/day-boundary";
 import { todayInZone } from "@/lib/time/user-tz";
@@ -241,5 +242,172 @@ describe("addDaysToIsoDate", () => {
 
   it("refuses a malformed date", () => {
     expect(() => addDaysToIsoDate("2024-2-30", 1)).toThrow(RangeError);
+  });
+});
+
+/**
+ * ===========================================================================
+ * CRITERION 20 — "09:00 stays 09:00 local across a DST transition"
+ * ===========================================================================
+ *
+ * This is the half of the recurrence engine that has to know about timezones.
+ * `expand()` names calendar squares and knows nothing about instants; this turns
+ * a square plus a series' `deadline_time` into the `timestamptz` that
+ * `deadline_at < now()` compares against.
+ *
+ * The failure this guards against is the one that survives review because it is
+ * right for ten months of the year: resolving the offset once, or storing an
+ * instant and adding 24-hour multiples, puts every occurrence an hour out for
+ * the half of the year on the other side of a transition.
+ */
+describe("instantFromWallClock — criterion 20", () => {
+  /** The wall-clock reading back out of an instant, for a readable assertion. */
+  function wallClock(timeZone: string, instant: Date): string {
+    return new Intl.DateTimeFormat("en-GB", {
+      timeZone,
+      hourCycle: "h23",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(instant);
+  }
+
+  it("resolves 09:00 to a different UTC instant on each side of a spring-forward", () => {
+    // America/New_York moves from -05:00 to -04:00 at 02:00 on 2026-03-08.
+    const before = instantFromWallClock(
+      "America/New_York",
+      { year: 2026, month: 3, day: 7 },
+      9,
+      0,
+    );
+    const after = instantFromWallClock(
+      "America/New_York",
+      { year: 2026, month: 3, day: 9 },
+      9,
+      0,
+    );
+
+    expect(before.toISOString()).toBe("2026-03-07T14:00:00.000Z");
+    expect(after.toISOString()).toBe("2026-03-09T13:00:00.000Z");
+
+    // The instants differ by 47 hours, not 48 — and both read 09:00 locally,
+    // which is the whole of the criterion.
+    expect((after.getTime() - before.getTime()) / HOUR).toBe(47);
+    expect(wallClock("America/New_York", before)).toBe("09:00");
+    expect(wallClock("America/New_York", after)).toBe("09:00");
+  });
+
+  it("does the same across a fall-back", () => {
+    // Back to -05:00 at 02:00 on 2026-11-01.
+    const before = instantFromWallClock(
+      "America/New_York",
+      { year: 2026, month: 10, day: 31 },
+      9,
+      0,
+    );
+    const after = instantFromWallClock(
+      "America/New_York",
+      { year: 2026, month: 11, day: 2 },
+      9,
+      0,
+    );
+
+    expect((after.getTime() - before.getTime()) / HOUR).toBe(49);
+    expect(wallClock("America/New_York", before)).toBe("09:00");
+    expect(wallClock("America/New_York", after)).toBe("09:00");
+  });
+
+  it("holds for Europe/London, whose transition is at a different instant", () => {
+    // BST begins at 01:00 UTC on 2026-03-29.
+    const before = instantFromWallClock(
+      "Europe/London",
+      { year: 2026, month: 3, day: 28 },
+      9,
+      0,
+    );
+    const after = instantFromWallClock(
+      "Europe/London",
+      { year: 2026, month: 3, day: 30 },
+      9,
+      0,
+    );
+
+    expect(before.toISOString()).toBe("2026-03-28T09:00:00.000Z");
+    expect(after.toISOString()).toBe("2026-03-30T08:00:00.000Z");
+    expect(wallClock("Europe/London", after)).toBe("09:00");
+  });
+
+  it("is correct in a zone with no transition at all", () => {
+    // Asia/Manila is +08:00 all year. Every occurrence is exactly 24h apart, and
+    // an implementation that only ever adds a fixed offset passes this one — it
+    // is here so the DST cases above are not the only evidence.
+    const first = instantFromWallClock(
+      "Asia/Manila",
+      { year: 2026, month: 3, day: 7 },
+      9,
+      0,
+    );
+    const second = instantFromWallClock(
+      "Asia/Manila",
+      { year: 2026, month: 3, day: 9 },
+      9,
+      0,
+    );
+
+    expect(first.toISOString()).toBe("2026-03-07T01:00:00.000Z");
+    expect((second.getTime() - first.getTime()) / HOUR).toBe(48);
+  });
+
+  it("is correct in a zone whose offset is not a whole hour", () => {
+    // Asia/Kolkata is +05:30. Hour-based arithmetic is wrong here year-round.
+    expect(
+      instantFromWallClock(
+        "Asia/Kolkata",
+        { year: 2026, month: 8, day: 6 },
+        9,
+        0,
+      ).toISOString(),
+    ).toBe("2026-08-06T03:30:00.000Z");
+  });
+
+  /**
+   * The documented behaviour in a DST gap, pinned so it is a decision rather
+   * than a discovery. America/Havana springs forward AT midnight, so 2023-03-12
+   * has no 00:30 at all: the clocks read 23:59:59 and then 01:00.
+   *
+   * The reading is interpreted at the pre-transition offset, so it lands in the
+   * last hour before the gap — here, 23:30 on the 11th. Up to an hour early, on
+   * one day a year, for a time that does not exist. What matters is that it is a
+   * real instant and not `Invalid Date` inside a list render.
+   */
+  it("resolves a wall clock that does not exist to the last hour before the gap", () => {
+    const instant = instantFromWallClock(
+      "America/Havana",
+      { year: 2023, month: 3, day: 12 },
+      0,
+      30,
+    );
+
+    expect(Number.isNaN(instant.getTime())).toBe(false);
+    expect(instant.toISOString()).toBe("2023-03-12T04:30:00.000Z");
+    expect(wallClock("America/Havana", instant)).toBe("23:30");
+
+    // The transition itself is 05:00Z — so the answer is half an hour short of
+    // it, not past it. Nothing is invented on the far side of the gap.
+    expect(instant.getTime()).toBeLessThan(
+      Date.parse("2023-03-12T05:00:00.000Z"),
+    );
+  });
+
+  it("agrees with startOfDayInZone at midnight in an ordinary zone", () => {
+    // The two resolve the same quantity by slightly different routes; they must
+    // not disagree where both are well defined.
+    expect(
+      instantFromWallClock(
+        "Asia/Manila",
+        { year: 2024, month: 1, day: 15 },
+        0,
+        0,
+      ).toISOString(),
+    ).toBe(startOfDayInZone("Asia/Manila", "2024-01-15").toISOString());
   });
 });

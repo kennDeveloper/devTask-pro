@@ -7,6 +7,7 @@ import { Text } from "@/components/ui/text";
 import { isOverdue } from "@/lib/tasks/overdue";
 
 import { ProgressControl } from "./progress-control";
+import { RepeatButton } from "./repeat-button";
 import { StatusControl } from "./status-control";
 import { dayLabel, formatDeadline } from "./task-presentation";
 import { useTaskActions } from "./use-task-actions";
@@ -44,6 +45,8 @@ export interface TaskRowProps {
   /** Number of columns, for the error row's `colSpan`. */
   columnCount: number;
   onEdit: (task: Task) => void;
+  /** Opens the repeat-rule editor. Only reachable on a recurring occurrence. */
+  onEditSeries: (seriesId: string) => void;
 }
 
 export function TaskRow({
@@ -52,6 +55,7 @@ export function TaskRow({
   showDay,
   columnCount,
   onEdit,
+  onEditSeries,
 }: TaskRowProps) {
   const { update } = useTaskActions();
   const overdue = isOverdue(task, clock.now);
@@ -68,9 +72,21 @@ export function TaskRow({
         data-overdue={overdue ? "true" : undefined}
       >
         <TableCell className="max-w-xs">
-          <Text variant="body-sm" weight="medium" className="block truncate">
-            {task.title}
-          </Text>
+          {/* Criterion 13: identical to a one-off but for the repeat button.
+              Nothing else on the row changes — the status control, the progress
+              slider and the overdue badge all behave exactly as they do for a
+              task nobody generated. */}
+          <div className="flex items-center gap-1.5">
+            <Text variant="body-sm" weight="medium" className="block truncate">
+              {task.title}
+            </Text>
+            {task.seriesId && (
+              <RepeatButton
+                title={task.title}
+                onClick={() => onEditSeries(task.seriesId!)}
+              />
+            )}
+          </div>
           {task.description && (
             <Text variant="caption" className="mt-0.5 block truncate">
               {task.description}
