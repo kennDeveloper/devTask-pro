@@ -1,5 +1,6 @@
 import { router } from "../server";
 
+import { adminRouter } from "./admin";
 import { profileRouter } from "./profile";
 import { seriesRouter } from "./series";
 import { tagRouter } from "./tag";
@@ -11,6 +12,7 @@ import { taskRouter } from "./task";
  * API surface to keep in sync.
  */
 export const appRouter = router({
+  admin: adminRouter,
   profile: profileRouter,
   task: taskRouter,
   series: seriesRouter,

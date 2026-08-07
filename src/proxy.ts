@@ -2,8 +2,10 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 import {
+  parseAccountRole,
   parseAccountStatus,
   routeForStatus,
+  type AccountRole,
   type AccountStatus,
 } from "@/lib/access/status-route";
 
@@ -50,6 +52,7 @@ export async function proxy(request: NextRequest) {
   // --- Everything below is devtask-pro's access gate. ------------------------
 
   let status: AccountStatus | null = null;
+  let role: AccountRole | null = null;
 
   if (user) {
     // Read the status from the row, NOT from the JWT.
@@ -66,10 +69,17 @@ export async function proxy(request: NextRequest) {
     // through the request-scoped client above, so RLS applies: the
     // `profiles_select_own` policy means the caller can only ever see their own
     // row, and a bug in this file cannot turn into a data leak.
+    //
+    // `role` rides along on the same statement. Phase 5 needs it so an admin
+    // lands on /admin/users rather than on the member app they do not have —
+    // one more column on a query that was already happening, not a second
+    // round trip. It decides *destinations* only: whether a caller may render
+    // /admin/* is settled by the (admin) layout and by `adminProcedure`, both
+    // of which read the profile themselves.
     try {
       const { data, error } = await supabase
         .from("profiles")
-        .select("status")
+        .select("status, role")
         .eq("id", user.id)
         .maybeSingle();
 
@@ -81,17 +91,20 @@ export async function proxy(request: NextRequest) {
       }
 
       status = parseAccountStatus(data?.status);
+      role = parseAccountRole(data?.role);
     } catch (cause) {
       // A throw here would 500 every page in the app. The 0002 trigger means a
       // signed-in user should always have a row, so treat a failed read as
       // "not provisioned" — routeForStatus sends that to /sign-in.
       console.error("[proxy] profiles.status read failed:", cause);
       status = null;
+      role = null;
     }
   }
 
   const destination = routeForStatus({
     status,
+    role,
     isSignedIn: Boolean(user),
     pathname: request.nextUrl.pathname,
   });

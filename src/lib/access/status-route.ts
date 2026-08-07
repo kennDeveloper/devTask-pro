@@ -17,9 +17,22 @@
  * checked before any status rule runs. That set is `ALWAYS_ALLOWED_PREFIXES`
  * below, and every one of its members has a loop test named after it.
  *
- * SCOPE: this routes on `profiles.status` only. `profiles.role` (i.e. keeping
- * non-admins out of /admin/*) is a phase-5 concern enforced in the (admin)
- * layout and the tRPC `adminProcedure`, not here.
+ * SCOPE, and the one line of it phase 5 changed. This module routes on
+ * `profiles.status`, and now also on `profiles.role` — but only to answer *where
+ * a caller belongs*, never *whether they may render /admin/\**. Those are two
+ * different questions and phase 1 was right to separate them:
+ *
+ *   - "May this caller render an admin page?" is a SECURITY question, and it is
+ *     still answered in `src/app/(admin)/layout.tsx` (which calls `notFound()`)
+ *     and independently at `adminProcedure`. A member asking for /admin/users
+ *     therefore gets `null` from here — the proxy lets them through so the
+ *     layout can 404 them, which is what brief criterion 5 asks for and what
+ *     `e2e/auth-flow.spec.ts` has asserted since phase 1. Turning that into a
+ *     redirect here would bypass the layout and quietly weaken the guarantee.
+ *
+ *   - "Where does a caller with no particular destination land?" is a ROUTING
+ *     question, and routing lives here. An admin has no task UI (see
+ *     ADMIN_HOME_PATH below), so anything outside /admin sends them home.
  */
 
 /** The four values of `profiles.status` — see `supabase/migrations/0001_initial_schema.sql`. */
@@ -31,6 +44,27 @@ const ACCOUNT_STATUSES: readonly string[] = [
   "rejected",
   "suspended",
 ];
+
+/** The two values of `profiles.role`. Mirrors the CHECK in 0001. */
+export type AccountRole = "member" | "admin";
+
+const ACCOUNT_ROLES: readonly string[] = ["member", "admin"];
+
+/**
+ * Narrow an untrusted value to an `AccountRole`.
+ *
+ * Anything unrecognised — including a failed profile read — becomes `null`,
+ * which is treated as `member`. That is the safe direction: the worst outcome is
+ * an admin being sent to /today instead of /admin/users, whereas defaulting to
+ * `admin` would hand the admin *destination* to an unreadable row. It cannot
+ * grant admin *access* either way, because access is the layout's decision and
+ * the layout reads the profile itself.
+ */
+export function parseAccountRole(value: unknown): AccountRole | null {
+  return typeof value === "string" && ACCOUNT_ROLES.includes(value)
+    ? (value as AccountRole)
+    : null;
+}
 
 /**
  * Narrow an untrusted value (a column read back as `string`, or nothing at all)
@@ -50,8 +84,35 @@ export const SIGN_IN_PATH = "/sign-in";
 export const PENDING_PATH = "/pending";
 /** Where `rejected` and `suspended` both go — one screen, no explanation of which. */
 export const NO_ACCESS_PATH = "/no-access";
-/** Where an already-signed-in `active` user gets sent off the sign-in/up pages. */
+/** Where an already-signed-in `active` **member** gets sent off the sign-in/up pages. */
 export const APP_HOME_PATH = "/today";
+
+/**
+ * Where an active **admin** lands, and the only part of the app they have.
+ *
+ * The two tiers are disjoint in the UI, decided in `docs/gsd/phase-5-plan.md`.
+ * Brief criterion 11 requires that no Today/Tasks/Overdue destination is
+ * reachable or rendered in an admin session, and `(app)/layout.tsx` renders
+ * `DashboardShell`, whose whole job is linking to those three routes — so an
+ * admin on /settings would be looking at task navigation. Rather than branch on
+ * role inside the member shell, the whole (app) group sends an admin here.
+ *
+ * The consequence is deliberate and worth saying out loud: **an admin has no
+ * task UI at all.** Their rows would still be RLS-scoped to them if any existed;
+ * there is simply no screen. Somebody who wants both keeps two accounts.
+ */
+export const ADMIN_HOME_PATH = "/admin/users";
+
+/**
+ * The admin tier's route prefix.
+ *
+ * The rule below is written as an inversion around this — "an admin's home is
+ * /admin; everything else in the app is not theirs" — rather than as a list of
+ * (app) routes to redirect. A list would need extending every time a phase adds
+ * a route, and the failure mode of forgetting is a task screen quietly becoming
+ * reachable in an admin session, which is exactly criterion 11.
+ */
+export const ADMIN_PREFIX = "/admin";
 
 /**
  * Paths that pass through no matter who is asking. Matched on segment
@@ -148,10 +209,24 @@ export function isAlwaysAllowed(pathname: string): boolean {
 export interface RouteForStatusInput {
   /** `profiles.status`, or `null` for "signed in but no profile row was readable". */
   status: AccountStatus | null;
+  /**
+   * `profiles.role`, or `null`/absent for "not read, or not readable" — both of
+   * which are treated as `member`. Optional so every existing caller that only
+   * cares about status keeps working unchanged.
+   */
+  role?: AccountRole | null;
   /** Whether `supabase.auth.getUser()` returned a user. */
   isSignedIn: boolean;
   /** `request.nextUrl.pathname` — no query string, no origin. */
   pathname: string;
+}
+
+/**
+ * Where an active caller of this role belongs when they have no destination of
+ * their own — off the sign-in form, or off a tier that is not theirs.
+ */
+function homeFor(role: AccountRole | null | undefined): string {
+  return role === "admin" ? ADMIN_HOME_PATH : APP_HOME_PATH;
 }
 
 /**
@@ -161,6 +236,7 @@ export interface RouteForStatusInput {
  */
 export function routeForStatus({
   status,
+  role,
   isSignedIn,
   pathname,
 }: RouteForStatusInput): string | null {
@@ -168,13 +244,14 @@ export function routeForStatus({
 
   // 1. An approved user has no reason to be looking at the sign-in form. This
   //    runs BEFORE the always-allowed check, because /sign-in is in that set
-  //    and would otherwise pass straight through.
+  //    and would otherwise pass straight through. Which home they get depends
+  //    on their tier — an admin sent to /today would be bounced again by rule 4.
   if (
     isSignedIn &&
     status === "active" &&
     ENTRY_AUTH_PREFIXES.some((prefix) => matchesPrefix(path, prefix))
   ) {
-    return APP_HOME_PATH;
+    return homeFor(role);
   }
 
   // 2. The loop breaker. Auth pages, gate screens, the callback, API routes and
@@ -191,6 +268,15 @@ export function routeForStatus({
   //    an access token that stays valid for up to an hour.
   switch (status) {
     case "active":
+      // The tiers are disjoint. An admin outside /admin is standing in the
+      // member app, which they do not have — send them home. A member on
+      // /admin/* deliberately falls through to `null`: the proxy lets them
+      // reach the route so the (admin) layout can answer with a 404 rather
+      // than a redirect, which is what criterion 5 asks for and what the
+      // phase-1 e2e asserts. Role decides destinations here, never access.
+      if (role === "admin" && !matchesPrefix(path, ADMIN_PREFIX)) {
+        return ADMIN_HOME_PATH;
+      }
       return null;
     case "pending":
       return PENDING_PATH;
