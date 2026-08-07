@@ -45,6 +45,7 @@ function values(overrides: Partial<TaskFormValues> = {}): TaskFormValues {
     deadlineLocal: "",
     status: "todo",
     progressPct: 0,
+    reminderLeadMinutes: null,
     ...overrides,
   };
 }
@@ -58,6 +59,8 @@ describe("initialTaskFormValues", () => {
       deadlineLocal: "",
       status: "todo",
       progressPct: 0,
+      // Off by default — a task reminds only because somebody asked it to.
+      reminderLeadMinutes: null,
     });
   });
 
@@ -206,5 +209,85 @@ describe("buildUpdatePatch", () => {
       ok: false,
       errors: { title: TASK_MESSAGES.titleRequired },
     });
+  });
+});
+
+describe("the reminder lead", () => {
+  const TASK_ID = task().id;
+
+  it("seeds from the task, including a series' template lead on a projection", () => {
+    // A projected occurrence carries its series' value, so the editor shows what
+    // it would actually remind at rather than an empty control.
+    const seeded = initialTaskFormValues(
+      task({ reminderLeadMinutes: 60, seriesId: "s", virtual: true }),
+      CLOCK,
+    );
+
+    expect(seeded.reminderLeadMinutes).toBe(60);
+  });
+
+  it("sends a newly chosen lead on create", () => {
+    const result = buildCreateInput(
+      values({ deadlineLocal: "2026-08-06T23:00", reminderLeadMinutes: 30 }),
+      CLOCK.timeZone,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.data.reminderLeadMinutes).toBe(30);
+  });
+
+  it("patches only when it actually moved", () => {
+    const unchanged = buildUpdatePatch(
+      values({ deadlineLocal: "2026-08-06T23:00", reminderLeadMinutes: 30 }),
+      task({ deadlineAt: "2026-08-06T15:00:00.000Z", reminderLeadMinutes: 30 }),
+      CLOCK.timeZone,
+    );
+
+    expect(unchanged.ok && unchanged.data).toBeNull();
+  });
+
+  it("sends null when the user switches the reminder off", () => {
+    // `null` is a real value, not an absence — a truthiness check here would
+    // make "no reminder" unsendable and silently leave the old lead in place.
+    const result = buildUpdatePatch(
+      values({ deadlineLocal: "2026-08-06T23:00", reminderLeadMinutes: null }),
+      task({ deadlineAt: "2026-08-06T15:00:00.000Z", reminderLeadMinutes: 30 }),
+      CLOCK.timeZone,
+    );
+
+    // The deadline is unchanged — 23:00 Manila *is* 15:00Z — so it is correctly
+    // left out and the patch names only what the user actually moved.
+    expect(result.ok && result.data).toEqual({
+      id: TASK_ID,
+      reminderLeadMinutes: null,
+    });
+  });
+
+  /**
+   * Clearing the deadline takes the reminder with it. A lead with nothing to
+   * count back from would sit in the database looking set while `dueReminders`
+   * ignored it — a reminder the user believes they have and never receives.
+   */
+  it("clears the lead when the deadline is cleared in the same submit", () => {
+    const result = buildUpdatePatch(
+      values({ deadlineLocal: "", reminderLeadMinutes: 30 }),
+      task({ deadlineAt: "2026-08-06T15:00:00.000Z", reminderLeadMinutes: 30 }),
+      CLOCK.timeZone,
+    );
+
+    expect(result.ok && result.data).toEqual({
+      id: TASK_ID,
+      deadlineAt: null,
+      reminderLeadMinutes: null,
+    });
+  });
+
+  it("never sends a lead on a create with no deadline", () => {
+    const result = buildCreateInput(
+      values({ deadlineLocal: "", reminderLeadMinutes: 30 }),
+      CLOCK.timeZone,
+    );
+
+    expect(result.ok && result.data.reminderLeadMinutes).toBeNull();
   });
 });

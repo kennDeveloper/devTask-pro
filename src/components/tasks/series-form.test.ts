@@ -272,3 +272,40 @@ describe("toRule", () => {
     expect(toRule(values({ freq: "daily", monthMode: "by_date" })).monthMode).toBeNull();
   });
 });
+
+describe("the template reminder lead", () => {
+  it("seeds a new series with no reminder", () => {
+    expect(initialSeriesFormValues(null, CLOCK).reminderLeadMinutes).toBeNull();
+  });
+
+  it("seeds an existing series with its own", () => {
+    const seeded = initialSeriesFormValues(
+      existing({ reminderLeadMinutes: 30 }),
+      CLOCK,
+    );
+
+    expect(seeded.reminderLeadMinutes).toBe(30);
+  });
+
+  it("sends the chosen lead on create", () => {
+    const result = buildSeriesInput(
+      values({ deadlineTime: "09:00", reminderLeadMinutes: 60 }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.data.reminderLeadMinutes).toBe(60);
+  });
+
+  /**
+   * A lead counts back from an occurrence's deadline, so a series with no due
+   * time has nothing to count back from. Storing one anyway would leave a
+   * reminder the user believes they set and never receives.
+   */
+  it("drops the lead when the series has no due time", () => {
+    const result = buildSeriesInput(
+      values({ deadlineTime: "", reminderLeadMinutes: 60 }),
+    );
+
+    expect(result.ok && result.data.reminderLeadMinutes).toBeNull();
+  });
+});
