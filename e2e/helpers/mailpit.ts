@@ -101,6 +101,25 @@ export async function latestFor(
 }
 
 /**
+ * Every captured message addressed to `email`, newest first.
+ *
+ * Unlike `latestFor` this does not poll and does not throw on an empty inbox,
+ * because its callers are asserting *how many* arrived — including zero, and
+ * including "still exactly one after running the job twice", which is acceptance
+ * criterion 21. A helper that waited for at least one could not express that.
+ */
+export async function messagesFor(email: string): Promise<MailpitSummary[]> {
+  const res = await fetch(`${MAILPIT}/api/v1/messages?limit=200`);
+  if (!res.ok) throw new Error(`Mailpit list: HTTP ${res.status}`);
+
+  const { messages } = (await res.json()) as { messages: MailpitSummary[] };
+
+  return messages.filter((message) =>
+    message.To.some((to) => to.Address.toLowerCase() === email.toLowerCase()),
+  );
+}
+
+/**
  * The first http(s) link in a message body.
  *
  * GoTrue's confirmation link points at the Supabase API's `/auth/v1/verify`, which
