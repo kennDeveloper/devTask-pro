@@ -111,6 +111,7 @@ function fakeRow(overrides: Partial<TaskOccurrence> = {}): TaskOccurrence {
     deadlineAt: null,
     status: "todo",
     progressPct: 0,
+    reminderLeadMinutes: null,
     completedAt: null,
     createdAt: new Date("2026-08-06T00:00:00Z"),
     updatedAt: new Date("2026-08-06T00:00:00Z"),

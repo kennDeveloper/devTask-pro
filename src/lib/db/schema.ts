@@ -32,6 +32,9 @@
  *   - RLS + grants on `tags`, `series_tags` and `occurrence_tags`, and the
  *     functional unique index `tags_user_name_uniq` on
  *     `(user_id, lower(btrim(name)))`                                    (0006)
+ *   - RLS on `reminder_log` — and note it has only TWO policies and only
+ *     `select, insert` granted, because it is an append-only ledger; the
+ *     two partial unique indexes behind its two identities                (0007)
  */
 
 import { sql } from "drizzle-orm";
@@ -345,6 +348,15 @@ export const taskOccurrence = pgTable(
     deadlineAt: timestamp("deadline_at", { withTimezone: true }),
     status: text("status").notNull().default("todo").$type<TaskStatus>(),
     progressPct: integer("progress_pct").notNull().default(0),
+    /**
+     * Minutes before `deadline_at` to email a reminder, or null for none (0007).
+     *
+     * Seeded from the series at materialisation and independent thereafter —
+     * the same rule every other series field follows. Bounded 0..10080 by a
+     * `check` in the SQL, mirrored by `reminderLeadMinutesField` at the Zod
+     * boundary.
+     */
+    reminderLeadMinutes: integer("reminder_lead_minutes"),
     /** Maintained by `sync_task_completed_at()` in 0004, never by application code. */
     completedAt: timestamp("completed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -526,3 +538,71 @@ export const occurrenceTags = pgTable(
 
 export type OccurrenceTag = typeof occurrenceTags.$inferSelect;
 export type NewOccurrenceTag = typeof occurrenceTags.$inferInsert;
+
+/**
+ * `public.reminder_log` — the at-most-once ledger behind criteria 21 and 22.
+ *
+ * One row per reminder the job has claimed the right to send. Exactly one of
+ * `seriesId` and `occurrenceId` is set (a `check` in 0007 Drizzle cannot
+ * express), because a reminder is identified by *which occurrence it was about*
+ * rather than by a row id:
+ *
+ *   a series occurrence  →  (series_id, occurs_on), materialised or not
+ *   a one-off task       →  (occurrence_id)
+ *
+ * The series key not changing when a date is later materialised is what stops a
+ * second reminder firing for it. **The job never writes `task_occurrence`** —
+ * criteria 15 and 17 depend on untouched occurrences never being rows. The long
+ * version is the header of `supabase/migrations/0007_reminders.sql`.
+ *
+ * Append-only: `authenticated` holds `select` and `insert` and nothing else, so
+ * there is no `updated_at` and no touch trigger. An account that could delete
+ * its own log rows could make the job send again.
+ */
+export const reminderLog = pgTable(
+  "reminder_log",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references((): AnyPgColumn => profiles.id, { onDelete: "cascade" }),
+    seriesId: uuid("series_id"),
+    occurrenceId: uuid("occurrence_id"),
+    /** The calendar square, set for both kinds. A bare `date`, read as a string. */
+    occursOn: date("occurs_on", { mode: "string" }).notNull(),
+    /**
+     * The instant the reminder counted back from. For a projected occurrence
+     * this is derived at send time and stored nowhere else, so the ledger would
+     * not otherwise record why it fired.
+     */
+    deadlineAt: timestamp("deadline_at", { withTimezone: true }).notNull(),
+    /**
+     * When the send was **claimed**, not when delivery was confirmed. The insert
+     * wins the right to send; a throw afterwards is a missed reminder rather
+     * than a retried one, which is what *at most once* asks for.
+     */
+    sentAt: timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.seriesId, table.userId],
+      foreignColumns: [taskSeries.id, taskSeries.userId],
+      name: "reminder_log_series_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.occurrenceId, table.userId],
+      foreignColumns: [taskOccurrence.id, taskOccurrence.userId],
+      name: "reminder_log_occurrence_fk",
+    }).onDelete("cascade"),
+    // Both real indexes in 0007 are partial (`where series_id is not null` and
+    // `where occurrence_id is not null`), which Drizzle cannot express. These
+    // entries exist so the mirror names them, not so it could recreate them —
+    // the same caveat `task_occurrence` carries on its own partial indexes.
+    uniqueIndex("reminder_log_series_uniq").on(table.seriesId, table.occursOn),
+    uniqueIndex("reminder_log_occurrence_uniq").on(table.occurrenceId),
+    index("reminder_log_user_idx").on(table.userId),
+  ],
+);
+
+export type ReminderLog = typeof reminderLog.$inferSelect;
+export type NewReminderLog = typeof reminderLog.$inferInsert;

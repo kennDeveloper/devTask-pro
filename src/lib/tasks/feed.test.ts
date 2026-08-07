@@ -101,6 +101,7 @@ function makeRow(overrides: Partial<TaskOccurrence> = {}): TaskOccurrence {
     deadlineAt: null,
     status: "todo",
     progressPct: 0,
+    reminderLeadMinutes: null,
     completedAt: null,
     createdAt: EPOCH,
     updatedAt: EPOCH,
