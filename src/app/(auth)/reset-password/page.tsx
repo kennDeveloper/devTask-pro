@@ -9,6 +9,7 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Text } from "@/components/ui/text";
+import { parseRecoveryFragment } from "@/lib/auth/recovery-fragment";
 import { DEFAULT_POST_AUTH_PATH } from "@/lib/auth/redirect";
 import {
   AUTH_MESSAGES,
@@ -20,10 +21,27 @@ import {
 import { createClient } from "@/lib/supabase/client";
 
 /**
- * Whether a recovery session actually exists. This page is only reachable via
- * the callback, which exchanges the emailed code for a session first — but the
- * link is single-use and hour-limited, so arriving without one is normal and
- * must not render a form that cannot possibly work.
+ * Whether a recovery session actually exists. Arriving without one is normal —
+ * the link is single-use and hour-limited — and must not render a form that
+ * cannot possibly work.
+ *
+ * ## Two ways a session gets here, and the page has to handle both
+ *
+ * 1. **PKCE**, when the user asked from `/forgot-password` in this browser. The
+ *    verifier is in a cookie, `/auth/callback` exchanges the code, and the
+ *    session is already in place before this page renders. `getSession()` finds
+ *    it and there is nothing else to do.
+ *
+ * 2. **Implicit**, when an *admin* sent the reset (phase 5). PKCE is impossible
+ *    there by construction — the verifier would have to travel from the server
+ *    to somebody else's browser — so GoTrue puts the whole session in the URL
+ *    fragment and points it straight here. The fragment never reaches a server,
+ *    and the browser client will not adopt it either: `createBrowserClient`
+ *    hard-sets `flowType: "pkce"` and supabase-js refuses an implicit URL in
+ *    that mode. So this page adopts it explicitly, with `setSession()`.
+ *
+ * Without case 2, an admin-triggered reset lands on "this link is no longer
+ * valid" while holding a perfectly good session in the address bar.
  */
 type RecoveryState = "checking" | "ready" | "missing";
 
@@ -40,10 +58,44 @@ export default function ResetPasswordPage() {
 
   useEffect(() => {
     let active = true;
-    supabase.auth.getSession().then(({ data }) => {
+
+    async function establish() {
+      // Case 2 first: an admin-sent link carries the session in the fragment.
+      // `setSession` does not care which flow produced the tokens, which is the
+      // whole reason it is used here instead of leaving it to the client's own
+      // URL detection.
+      const grant = parseRecoveryFragment(window.location.hash);
+      if (grant) {
+        const { error } = await supabase.auth.setSession({
+          access_token: grant.accessToken,
+          refresh_token: grant.refreshToken,
+        });
+
+        // Strip the fragment either way. It is a live credential: leaving it in
+        // the address bar puts it in history and in any copied URL, and a reload
+        // would re-submit a token that is now spent.
+        window.history.replaceState(
+          null,
+          "",
+          window.location.pathname + window.location.search,
+        );
+
+        if (!active) return;
+        if (!error) {
+          setRecovery("ready");
+          return;
+        }
+        // A rejected grant is a spent or tampered link — fall through to the
+        // ordinary check, which will find no session and say so honestly.
+      }
+
+      const { data } = await supabase.auth.getSession();
       if (!active) return;
       setRecovery(data.session ? "ready" : "missing");
-    });
+    }
+
+    void establish();
+
     return () => {
       active = false;
     };

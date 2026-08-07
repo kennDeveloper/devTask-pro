@@ -37,6 +37,7 @@ import {
   date,
   index,
   integer,
+  pgSchema,
   pgTable,
   text,
   time,
@@ -45,6 +46,42 @@ import {
   uuid,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
+
+/**
+ * `auth.users` — Supabase's own table, mirrored READ-ONLY and only far enough to
+ * read one column.
+ *
+ * ============================================================================
+ * THIS IS NOT OURS. NEVER WRITE TO IT. NEVER RUN `drizzle-kit generate` ON IT.
+ * ============================================================================
+ *
+ * The auth service owns this table and we do not get to add columns to it —
+ * that is why `public.profiles` exists at all (see 0001). It appears here for
+ * exactly one reason: the admin account list shows **last sign-in**, and that
+ * fact lives nowhere else. Copying it into `profiles` would mean a trigger, a
+ * column and a migration to keep a value in sync that we can simply join to.
+ *
+ * Two facts, both measured against the local stack rather than assumed:
+ *
+ *   - `dbAdmin` connects as `postgres`, which **can** select from `auth.users`.
+ *   - The `authenticated` role **cannot** — `permission denied for table users`.
+ *
+ * So this column is unreachable from every user-facing path by construction,
+ * with no policy for us to write and nothing to get wrong. The only consumer is
+ * `listAccountsAsAdmin` / `findAccountAsAdmin` in `repos/profiles.ts`.
+ *
+ * Only the columns actually read are declared. A fuller mirror would be a
+ * standing invitation to reach for one of them, and `drizzle-kit generate` —
+ * which this project never runs to author DDL — would try to emit the `auth`
+ * schema as if we owned it.
+ */
+const authSchema = pgSchema("auth");
+
+export const authUsers = authSchema.table("users", {
+  id: uuid("id").primaryKey(),
+  /** Maintained by GoTrue on every successful sign-in. Null until the first one. */
+  lastSignInAt: timestamp("last_sign_in_at", { withTimezone: true }),
+});
 
 /** The four account states the access gate routes on. Mirrors the CHECK in 0001. */
 export const PROFILE_STATUSES = [

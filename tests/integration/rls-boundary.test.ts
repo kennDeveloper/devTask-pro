@@ -3,6 +3,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { eq, sql } from "drizzle-orm";
 
 import { dbAdmin } from "@/lib/db/client";
+import * as profilesRepo from "@/lib/db/repos/profiles";
 import { withUser } from "@/lib/db/rls";
 import { profiles, taskOccurrence, taskSeries } from "@/lib/db/schema";
 
@@ -753,5 +754,296 @@ describe("task_occurrence_series_day_uniq", () => {
     expect(attempt!.cause?.message ?? attempt!.message).toMatch(
       /task_occurrence_series_fk|foreign key/i,
     );
+  });
+});
+
+/**
+ * ===========================================================================
+ * PHASE 5 — THE ADMIN TIER, EXERCISED THROUGH ITS OWN ESCALATED PATH
+ * ===========================================================================
+ *
+ * The block above proves that an admin's *scoped session* sees no task rows.
+ * Phase 5 adds the code that deliberately does not use a scoped session:
+ * `…AsAdmin` in `src/lib/db/repos/profiles.ts` runs on `dbAdmin`, which bypasses
+ * every policy above. So the question this block asks is the one the earlier
+ * blocks cannot: **now that a privileged path exists, does it stay inside its
+ * fence?**
+ *
+ * Three things are proven here that nothing else can prove:
+ *
+ *   1. What the admin tier can actually see is account metadata — asserted by
+ *      running the real function against a real database and reading its keys,
+ *      rather than by trusting the projection's source.
+ *   2. `auth.users`, which the account list joins for `last_sign_in_at`, is
+ *      unreachable from the `authenticated` role. No migration grants it and
+ *      none should.
+ *   3. The last-active-admin guard survives two admins revoking each other at
+ *      the same instant — the case a count-then-update would get wrong and no
+ *      unit test with a mocked transaction can reach.
+ *
+ * Appended as its own block. The file's earlier sections are phase 1's and
+ * phase 2's and are left exactly as they were.
+ */
+describe("the phase-5 admin tier stays inside its fence", () => {
+  /**
+   * Every account that was an active administrator before this block ran, other
+   * than our own fixture. They are parked so the guard tests are deterministic —
+   * "the last active admin" is a global fact, and a bootstrap admin from
+   * `pnpm admin:create` or a leftover from an e2e run would otherwise decide
+   * whether the guard fires. Restored in `afterAll`.
+   */
+  let parkedAdmins: string[] = [];
+  let secondAdmin: string;
+
+  beforeAll(async () => {
+    secondAdmin = await createUser(`rls-admin2-${stamp}@devtask.local`);
+    await dbAdmin
+      .update(profiles)
+      .set({ role: "admin", status: "active" })
+      .where(eq(profiles.id, secondAdmin));
+
+    const rows = await dbAdmin.execute<{ id: string }>(
+      sql`select id from public.profiles where role = 'admin' and status = 'active'`,
+    );
+
+    parkedAdmins = rows
+      .map((row) => row.id)
+      .filter((id) => id !== adminUser && id !== secondAdmin);
+
+    for (const id of parkedAdmins) {
+      await dbAdmin
+        .update(profiles)
+        .set({ status: "suspended" })
+        .where(eq(profiles.id, id));
+    }
+  });
+
+  afterAll(async () => {
+    for (const id of parkedAdmins) {
+      await dbAdmin
+        .update(profiles)
+        .set({ status: "active" })
+        .where(eq(profiles.id, id));
+    }
+    if (secondAdmin) await admin.auth.admin.deleteUser(secondAdmin);
+  });
+
+  it("lists accounts across every user — the escalation genuinely escalates", async () => {
+    const accounts = await profilesRepo.listAccountsAsAdmin();
+    const ids = accounts.map((account) => account.id);
+
+    expect(ids).toEqual(expect.arrayContaining([userA, userB, adminUser]));
+  });
+
+  /**
+   * CRITERION 8, against the database rather than against the source. The list
+   * an admin receives carries account metadata and nothing else — no task
+   * column arrives because none is fetched, and this reads the actual returned
+   * object rather than trusting the projection literal.
+   */
+  it("returns account metadata only — no task field, by any name", async () => {
+    const accounts = await profilesRepo.listAccountsAsAdmin();
+    const [account] = accounts.filter((row) => row.id === userA);
+
+    expect(Object.keys(account).sort()).toEqual([
+      "approvedAt",
+      "createdAt",
+      "displayName",
+      "email",
+      "id",
+      "lastSignInAt",
+      "role",
+      "status",
+    ]);
+
+    // Every row, not just the sampled one — and over the *keys*, because the
+    // values are user data. The fixture addresses end in `@devtask.local`, so a
+    // sweep over serialised values would flag the word "task" in an email and
+    // prove nothing about the projection.
+    const keys = new Set(accounts.flatMap((row) => Object.keys(row)));
+    expect([...keys].sort()).toEqual([
+      "approvedAt",
+      "createdAt",
+      "displayName",
+      "email",
+      "id",
+      "lastSignInAt",
+      "role",
+      "status",
+    ]);
+
+    for (const key of keys) {
+      for (const word of ["task", "occurrence", "progress", "deadline"]) {
+        expect(
+          key.toLowerCase(),
+          `the account list carries a "${key}" field`,
+        ).not.toContain(word);
+      }
+    }
+  });
+
+  /**
+   * `last_sign_in_at` is joined from `auth.users`, which is Supabase's table
+   * rather than ours. It needs no policy because the role every user-facing
+   * query runs as holds no grant on it at all — a different and stronger
+   * failure mode than RLS returning zero rows.
+   */
+  it("keeps auth.users unreachable from the authenticated role", async () => {
+    const attempt = await withUser({ sub: adminUser }, (tx) =>
+      tx.execute(sql`select count(*) from auth.users`),
+    ).then(
+      () => null,
+      (e: unknown) => e as Error & { cause?: { message?: string } },
+    );
+
+    expect(attempt).not.toBeNull();
+    expect(attempt!.cause?.message ?? attempt!.message).toMatch(
+      /permission denied/i,
+    );
+  });
+
+  it("moves somebody else's status, which their own session cannot", async () => {
+    const outcome = await profilesRepo.setAccountStatusAsAdmin({
+      actorId: adminUser,
+      targetId: userA,
+      status: "active",
+      stampApproval: true,
+    });
+
+    expect(outcome.ok).toBe(true);
+
+    const [row] = await dbAdmin
+      .select()
+      .from(profiles)
+      .where(eq(profiles.id, userA));
+
+    expect(row.status).toBe("active");
+    // The audit fields the admin path is the only writer of.
+    expect(row.approvedAt).not.toBeNull();
+    expect(row.approvedBy).toBe(adminUser);
+  });
+
+  it("does not rewrite an approval stamp on a later reinstatement", async () => {
+    const [before] = await dbAdmin
+      .select()
+      .from(profiles)
+      .where(eq(profiles.id, userA));
+
+    await profilesRepo.setAccountStatusAsAdmin({
+      actorId: adminUser,
+      targetId: userA,
+      status: "suspended",
+      stampApproval: false,
+    });
+    await profilesRepo.setAccountStatusAsAdmin({
+      actorId: secondAdmin,
+      targetId: userA,
+      status: "active",
+      stampApproval: true,
+    });
+
+    const [after] = await dbAdmin
+      .select()
+      .from(profiles)
+      .where(eq(profiles.id, userA));
+
+    // Reinstating somebody must not move the date they originally joined.
+    expect(after.approvedAt?.toISOString()).toBe(
+      before.approvedAt?.toISOString(),
+    );
+    expect(after.approvedBy).toBe(adminUser);
+  });
+
+  it("refuses to revoke the last active administrator", async () => {
+    // Park the second one, leaving exactly one.
+    await profilesRepo.setAccountStatusAsAdmin({
+      actorId: adminUser,
+      targetId: secondAdmin,
+      status: "suspended",
+      stampApproval: false,
+    });
+
+    const outcome = await profilesRepo.setAccountStatusAsAdmin({
+      actorId: secondAdmin,
+      targetId: adminUser,
+      status: "suspended",
+      stampApproval: false,
+    });
+
+    expect(outcome).toEqual({ ok: false, reason: "last_admin" });
+    await expect(profilesRepo.countActiveAdminsAsAdmin()).resolves.toBe(1);
+
+    // Put the second one back for the race below.
+    await profilesRepo.setAccountStatusAsAdmin({
+      actorId: adminUser,
+      targetId: secondAdmin,
+      status: "active",
+      stampApproval: true,
+    });
+  });
+
+  /**
+   * THE ONE A MOCKED TRANSACTION CANNOT REACH.
+   *
+   * Two administrators revoking each other at the same instant. Written the
+   * obvious way — count, then update — both transactions read a count of two,
+   * both conclude they are fine, and the application is left with no
+   * administrators at all and no way to make one without a shell.
+   *
+   * `setAccountStatusAsAdmin` takes `for update` on the active-admin set before
+   * it reads or writes anything, so the second transaction blocks; under READ
+   * COMMITTED, Postgres re-evaluates the predicate after the lock is granted,
+   * the row it was counting on is no longer active, and it correctly refuses.
+   *
+   * The primary claim is the invariant rather than which caller won: **an
+   * administrator remains.**
+   */
+  it("survives two administrators revoking each other at the same instant", async () => {
+    await expect(profilesRepo.countActiveAdminsAsAdmin()).resolves.toBe(2);
+
+    const results = await Promise.allSettled([
+      profilesRepo.setAccountStatusAsAdmin({
+        actorId: adminUser,
+        targetId: secondAdmin,
+        status: "suspended",
+        stampApproval: false,
+      }),
+      profilesRepo.setAccountStatusAsAdmin({
+        actorId: secondAdmin,
+        targetId: adminUser,
+        status: "suspended",
+        stampApproval: false,
+      }),
+    ]);
+
+    const succeeded = results.filter(
+      (result) => result.status === "fulfilled" && result.value.ok,
+    );
+
+    expect(succeeded).toHaveLength(1);
+    await expect(
+      profilesRepo.countActiveAdminsAsAdmin(),
+    ).resolves.toBeGreaterThanOrEqual(1);
+
+    // Restore both, so `afterAll`'s cleanup and any later run start level.
+    for (const id of [adminUser, secondAdmin]) {
+      await dbAdmin
+        .update(profiles)
+        .set({ status: "active" })
+        .where(eq(profiles.id, id));
+    }
+  });
+
+  /**
+   * CRITERION 6, RE-ASSERTED AFTER THE FACT. Everything above ran on `dbAdmin`.
+   * None of it changed what an admin's own *session* is allowed to see, because
+   * RLS scopes on `auth.uid()` and the privileged path never touched a policy.
+   */
+  it("still shows an admin session zero task rows, after all of the above", async () => {
+    const rows = await withUser({ sub: adminUser, email: EMAIL_ADMIN }, (tx) =>
+      tx.select().from(taskOccurrence),
+    );
+
+    expect(rows).toHaveLength(0);
   });
 });
