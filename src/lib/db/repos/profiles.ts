@@ -190,6 +190,55 @@ export async function listAccountsAsAdmin(): Promise<AdminAccount[]> {
     .limit(ACCOUNT_LIST_LIMIT);
 }
 
+/** Who the reminder job may write to, and everything it needs to do it. */
+export interface ReminderRecipient {
+  id: string;
+  email: string;
+  /** IANA zone from the profile — the job never reads the server's. */
+  timezone: string;
+}
+
+/**
+ * Every **active** account, for the reminder job. **Bypasses RLS.**
+ *
+ * This is phase 6's single escalated read, and it is inside this fence rather
+ * than in the job because of the rule at the top of this section: a statement
+ * that bypasses the policies may name `profiles` and `auth.users` and nothing
+ * else. The job needs to know who exists — which no user's own session can
+ * answer — and then reads each person's *tasks* through `withUser()` with their
+ * own claims, where the policies apply exactly as they do to a person at a
+ * browser. So phase 6 adds no new `dbAdmin` importer, and
+ * `src/lib/admin/isolation.test.ts` needs no new entry.
+ *
+ * ## Only `active`
+ *
+ * The same line `activeProcedure` draws. A `pending`, `rejected` or `suspended`
+ * account is authenticated but must not reach application data, and mailing
+ * somebody about work they cannot open is the same violation delivered by post.
+ *
+ * ## Deliberately unbounded, unlike `listAccountsAsAdmin`
+ *
+ * `ACCOUNT_LIST_LIMIT` exists because a screen has to stop somewhere. Inheriting
+ * it here would silently stop sending mail to everybody past the five hundredth
+ * account, with no error and nothing on any screen to notice — a truncated list
+ * is a visibly short page, but a truncated *job* is just a person who stopped
+ * getting their reminders. If the account count ever makes one statement
+ * unreasonable, the answer is a cursor over this query, not a cap on it.
+ */
+export async function listActiveRecipientsAsAdmin(): Promise<
+  ReminderRecipient[]
+> {
+  return dbAdmin
+    .select({
+      id: profiles.id,
+      email: profiles.email,
+      timezone: profiles.timezone,
+    })
+    .from(profiles)
+    .where(eq(profiles.status, "active"))
+    .orderBy(profiles.createdAt);
+}
+
 /** One account by id, same projection. **Bypasses RLS.** */
 export async function findAccountAsAdmin(
   id: string,
