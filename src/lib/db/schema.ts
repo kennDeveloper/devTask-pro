@@ -26,6 +26,9 @@
  *   - RLS, the grants, and `guard_profile_privileged_columns()`        (0003)
  *   - RLS + grants on `task_occurrence`, `sync_task_completed_at()`,
  *     and the partial index behind `task_occurrence_user_deadline_idx` (0004)
+ *   - RLS + grants on `task_series`, its six cross-column CHECKs, the
+ *     partial index behind `task_series_user_live_idx`, and the partial
+ *     unique index `task_occurrence_series_day_uniq`                    (0005)
  */
 
 import { sql } from "drizzle-orm";
@@ -36,7 +39,9 @@ import {
   integer,
   pgTable,
   text,
+  time,
   timestamp,
+  uniqueIndex,
   uuid,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
@@ -100,6 +105,160 @@ export type NewProfile = typeof profiles.$inferInsert;
 export const TASK_STATUSES = ["todo", "in_progress", "done"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
+// ---------------------------------------------------------------------------
+// The recurrence vocabulary
+// ---------------------------------------------------------------------------
+//
+// Declared here rather than in `src/lib/recurrence/` for the reason
+// `src/lib/tasks/status.ts` gives about `TASK_STATUSES`: each of these mirrors a
+// `check (col in (...))` in `0005_task_series.sql`, and that CHECK is the actual
+// authority. A second literal list in the engine would be one more place to
+// forget when a value is added — so the engine imports these and owns only what
+// the database has no opinion about (what the words mean, what order they go in,
+// which dates they name).
+
+/** Mirrors `check (freq in (...))` in 0005. */
+export const RECURRENCE_FREQUENCIES = [
+  "daily",
+  "weekly",
+  "monthly",
+  "yearly",
+] as const;
+export type RecurrenceFrequency = (typeof RECURRENCE_FREQUENCIES)[number];
+
+/**
+ * RFC 5545 `BYDAY` codes, in ISO week order (Monday first).
+ *
+ * The order is load-bearing, not cosmetic: `WEEKDAYS.indexOf(code)` is how the
+ * expander turns a code into a day-of-week offset from the start of an ISO week,
+ * and RFC 5545's default `WKST` is `MO`. Reordering this to put Sunday first
+ * would silently shift every weekly rule by a day.
+ */
+export const WEEKDAYS = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"] as const;
+export type Weekday = (typeof WEEKDAYS)[number];
+
+/**
+ * The two monthly rules. Mirrors `check (month_mode in (...))` in 0005.
+ *
+ * They are genuinely different questions — "the 15th" and "the last Friday" pick
+ * different dates in every month, and neither is derivable from the other.
+ */
+export const MONTH_MODES = ["by_date", "by_nth_weekday"] as const;
+export type MonthMode = (typeof MONTH_MODES)[number];
+
+/** The five end conditions collapse to three modes. Mirrors 0005's CHECK. */
+export const ENDS_MODES = ["never", "on", "after"] as const;
+export type EndsMode = (typeof ENDS_MODES)[number];
+
+/** `-1` is "last". Mirrors `check (nth_week in (1, 2, 3, 4, -1))` in 0005. */
+export const NTH_WEEKS = [1, 2, 3, 4, -1] as const;
+export type NthWeek = (typeof NTH_WEEKS)[number];
+
+/**
+ * `public.task_series` — a repeat rule.
+ *
+ * A series names dates. It carries no status, no progress and no completion:
+ * the trackable unit is still a `task_occurrence`, and one is written the first
+ * time somebody touches a particular date. See
+ * `supabase/migrations/0005_task_series.sql` for the reasoning behind every
+ * column, and for the RLS policies that keep a series as private as the
+ * occurrences it produces.
+ *
+ * Three things below are load-bearing and easy to "tidy" wrongly:
+ *
+ * - **`startsOn` and `endsOn` are `date` in `mode: "string"`**, like `occursOn` —
+ *   bare `YYYY-MM-DD` calendar squares, never `Date`s with a time and a zone
+ *   attached.
+ * - **`deadlineTime` is a bare `time`**, a wall-clock reading with no zone. The
+ *   instant is computed per occurrence by resolving it in the owner's timezone,
+ *   which is what makes 09:00 stay 09:00 across a DST transition (criterion 20).
+ * - **`rrule` is derived, never input.** `src/lib/recurrence/serialize.ts`
+ *   produces it from the columns above it. Writing it by hand would let the
+ *   string and the columns describe different rules.
+ */
+export const taskSeries = pgTable(
+  "task_series",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** FK to `profiles.id`, which is also the auth user id. Cascades on delete. */
+    userId: uuid("user_id")
+      .notNull()
+      .references((): AnyPgColumn => profiles.id, { onDelete: "cascade" }),
+
+    title: text("title").notNull(),
+    description: text("description"),
+
+    freq: text("freq").notNull().$type<RecurrenceFrequency>(),
+    interval: integer("interval").notNull().default(1),
+    /**
+     * WEEKLY only, and empty for every other frequency — 0005 enforces that with
+     * `task_series_weekly_days_check`. An empty array on a weekly rule means
+     * "the weekday `startsOn` falls on", per RFC 5545.
+     */
+    byweekday: text("byweekday")
+      .array()
+      .notNull()
+      .$type<Weekday[]>()
+      .default(sql`'{}'::text[]`),
+
+    monthMode: text("month_mode").$type<MonthMode>(),
+    monthDay: integer("month_day"),
+    nthWeek: integer("nth_week").$type<NthWeek>(),
+    nthWeekday: text("nth_weekday").$type<Weekday>(),
+
+    startsOn: date("starts_on", { mode: "string" }).notNull(),
+    /** `HH:MM:SS` wall clock, or null for "these occurrences have no deadline". */
+    deadlineTime: time("deadline_time"),
+
+    endsMode: text("ends_mode").notNull().default("never").$type<EndsMode>(),
+    endsOn: date("ends_on", { mode: "string" }),
+    endsCount: integer("ends_count"),
+
+    rrule: text("rrule").notNull(),
+    /** Phase 6. Declared so adding it later is not a second policy migration. */
+    reminderLeadMinutes: integer("reminder_lead_minutes"),
+
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    /** Soft delete — a deleted series is never expanded; its rows survive. */
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (table) => [
+    // The real index in 0005 is partial (`where deleted_at is null`). Drizzle
+    // cannot express that here; this entry exists so the mirror names the index,
+    // not so it could recreate it.
+    index("task_series_user_live_idx").on(table.userId),
+    check(
+      "task_series_freq_check",
+      sql`${table.freq} in ('daily', 'weekly', 'monthly', 'yearly')`,
+    ),
+    check(
+      "task_series_interval_check",
+      sql`${table.interval} between 1 and 365`,
+    ),
+    check(
+      "task_series_month_mode_check",
+      sql`${table.monthMode} in ('by_date', 'by_nth_weekday')`,
+    ),
+    check(
+      "task_series_ends_mode_check",
+      sql`${table.endsMode} in ('never', 'on', 'after')`,
+    ),
+    // The six cross-column CHECKs in 0005 (monthly ⇔ month_mode, by_date ⇔
+    // month_day, by_nth_weekday ⇔ nth_week + nth_weekday, weekdays ⇒ weekly, the
+    // ends triple, and ends_on >= starts_on) have no representation here.
+    // Drizzle's `check` can hold the expression, but they are the part of this
+    // table most worth reading in SQL — see the migration.
+  ],
+);
+
+export type TaskSeries = typeof taskSeries.$inferSelect;
+export type NewTaskSeries = typeof taskSeries.$inferInsert;
+
 /**
  * `public.task_occurrence` — the trackable unit of work.
  *
@@ -125,11 +284,18 @@ export const taskOccurrence = pgTable(
       .notNull()
       .references((): AnyPgColumn => profiles.id, { onDelete: "cascade" }),
     /**
-     * Null for a one-off. Phase 3 creates `task_series` and adds the FK plus the
-     * partial unique index — deliberately absent here, since no row references
-     * anything yet.
+     * Null for a one-off, set for a materialised occurrence of a series.
+     *
+     * The FK and the partial unique index `(series_id, occurs_on) where
+     * series_id is not null` were both added by 0005, against phase-2 data where
+     * every value was NULL. The uniqueness is what `materialize()` targets with
+     * ON CONFLICT, so first-touch is one statement that cannot race itself —
+     * and it is partial so that one-off tasks, which all share `series_id IS
+     * NULL`, are not caught by it.
      */
-    seriesId: uuid("series_id"),
+    seriesId: uuid("series_id").references((): AnyPgColumn => taskSeries.id, {
+      onDelete: "cascade",
+    }),
     title: text("title").notNull(),
     description: text("description"),
     occursOn: date("occurs_on", { mode: "string" }).notNull(),
@@ -153,6 +319,12 @@ export const taskOccurrence = pgTable(
     index("task_occurrence_user_deadline_idx").on(
       table.userId,
       table.deadlineAt,
+    ),
+    // Also partial in 0005 (`where series_id is not null`), which Drizzle cannot
+    // express — named here so the mirror knows the constraint exists.
+    uniqueIndex("task_occurrence_series_day_uniq").on(
+      table.seriesId,
+      table.occursOn,
     ),
     check(
       "task_occurrence_status_check",

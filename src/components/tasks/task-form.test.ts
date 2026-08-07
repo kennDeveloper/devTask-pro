@@ -21,6 +21,7 @@ function task(overrides: Partial<Task> = {}): Task {
   return {
     id: "11111111-2222-4333-8444-555555555555",
     seriesId: null,
+    virtual: false,
     title: "Write the migration",
     description: null,
     occursOn: "2026-08-06",

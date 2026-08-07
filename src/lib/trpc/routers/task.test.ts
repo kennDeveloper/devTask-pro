@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { User } from "@supabase/supabase-js";
 
-import type { Profile, ProfileStatus, TaskOccurrence } from "@/lib/db/schema";
+import type {
+  Profile,
+  ProfileStatus,
+  TaskOccurrence,
+  TaskSeries,
+} from "@/lib/db/schema";
 
 /**
  * Tests for the task router.
@@ -19,12 +24,27 @@ vi.mock("@/lib/db/repos/occurrences", () => ({
   listAll: vi.fn(),
   listForDay: vi.fn(),
   listOverdue: vi.fn(),
+  listForSeries: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
+  materialize: vi.fn(),
+}));
+
+/**
+ * Phase 3 put `src/lib/tasks/feed.ts` between this router and the repos, so
+ * every read now also asks for the caller's live series. Mocked to none by
+ * default: the merge is `feed.test.ts`'s subject, and what this file owns is the
+ * procedure ladder, the Zod boundary, and where the caller's identity comes
+ * from.
+ */
+vi.mock("@/lib/db/repos/series", () => ({
+  listActive: vi.fn(),
+  findOwn: vi.fn(),
 }));
 
 import * as occurrences from "@/lib/db/repos/occurrences";
+import * as seriesRepo from "@/lib/db/repos/series";
 import { createCallerFactory, type Context } from "../server";
 import { taskRouter } from "./task";
 
@@ -86,6 +106,12 @@ function fakeRow(overrides: Partial<TaskOccurrence> = {}): TaskOccurrence {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Every read goes through the feed, which asks for the caller's live series.
+  // None, unless a test says otherwise.
+  vi.mocked(seriesRepo.listActive).mockResolvedValue([]);
+  vi.mocked(occurrences.listAll).mockResolvedValue([]);
+  vi.mocked(occurrences.listForDay).mockResolvedValue([]);
+  vi.mocked(occurrences.listOverdue).mockResolvedValue([]);
 });
 
 describe("the procedure ladder", () => {
@@ -317,5 +343,198 @@ describe("a row that RLS filtered out is NOT_FOUND, never FORBIDDEN", () => {
     await expect(caller.remove({ id: TASK_ID })).rejects.toMatchObject({
       code: "NOT_FOUND",
     });
+  });
+});
+
+/**
+ * ===========================================================================
+ * MATERIALISE ON TOUCH
+ * ===========================================================================
+ *
+ * `task.update` accepts a row's uuid *or* the synthetic reference a projected
+ * occurrence travels under, and touching a projection is what turns it into a
+ * row. The branch lives on the server so the series can be re-checked; what is
+ * asserted here is that the branch exists, that it re-checks, and that the
+ * client cannot reach a date its rule does not name.
+ */
+describe("task.update materialises a projected occurrence", () => {
+  const SERIES_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const EPOCH = new Date("2026-01-01T00:00:00.000Z");
+
+  /** Weekly on Mondays and Wednesdays from Mon 5 Jan, due 09:00. */
+  function fakeSeries(overrides: Partial<TaskSeries> = {}): TaskSeries {
+    return {
+      id: SERIES_ID,
+      userId: USER_ID,
+      title: "Team standup",
+      description: null,
+      freq: "weekly",
+      interval: 1,
+      byweekday: ["MO", "WE"],
+      monthMode: null,
+      monthDay: null,
+      nthWeek: null,
+      nthWeekday: null,
+      startsOn: "2026-01-05",
+      deadlineTime: "09:00:00",
+      endsMode: "never",
+      endsOn: null,
+      endsCount: null,
+      rrule: "FREQ=WEEKLY;BYDAY=MO,WE",
+      reminderLeadMinutes: null,
+      createdAt: EPOCH,
+      updatedAt: EPOCH,
+      deletedAt: null,
+      ...overrides,
+    };
+  }
+
+  const VIRTUAL_ID = `series:${SERIES_ID}:2026-01-07`;
+
+  beforeEach(() => {
+    vi.mocked(seriesRepo.findOwn).mockResolvedValue(fakeSeries());
+    vi.mocked(occurrences.materialize).mockResolvedValue(
+      fakeRow({ seriesId: SERIES_ID, occursOn: "2026-01-07" }),
+    );
+  });
+
+  it("writes a row instead of patching one", async () => {
+    const caller = createCaller(contextFor("active"));
+    await caller.update({ id: VIRTUAL_ID, status: "in_progress", progressPct: 60 });
+
+    expect(occurrences.update).not.toHaveBeenCalled();
+    expect(occurrences.materialize).toHaveBeenCalledWith(
+      { sub: USER_ID, email: "member@example.com" },
+      expect.objectContaining({
+        seriesId: SERIES_ID,
+        occursOn: "2026-01-07",
+        status: "in_progress",
+        progressPct: 60,
+      }),
+    );
+  });
+
+  it("still patches a row when given a real uuid", async () => {
+    vi.mocked(occurrences.update).mockResolvedValue(fakeRow());
+    const caller = createCaller(contextFor("active"));
+
+    await caller.update({ id: TASK_ID, status: "done" });
+
+    expect(occurrences.materialize).not.toHaveBeenCalled();
+    expect(occurrences.update).toHaveBeenCalled();
+  });
+
+  it("reports a date the rule does not name as NOT_FOUND", async () => {
+    // The 6th is a Tuesday; the rule names Mondays and Wednesdays. Without this
+    // check a client could plant a row belonging to a series on a day that
+    // series never produces.
+    const caller = createCaller(contextFor("active"));
+
+    await expect(
+      caller.update({ id: `series:${SERIES_ID}:2026-01-06`, status: "done" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(occurrences.materialize).not.toHaveBeenCalled();
+  });
+
+  it("reports somebody else's series as NOT_FOUND, never FORBIDDEN", async () => {
+    // `findOwn` returns null for "not yours", "no such series" and "deleted"
+    // alike — from outside they are the same fact, and distinguishing them would
+    // confirm the existence of another user's data.
+    vi.mocked(seriesRepo.findOwn).mockResolvedValue(null);
+    const caller = createCaller(contextFor("active"));
+
+    await expect(
+      caller.update({ id: VIRTUAL_ID, status: "done" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("does not let a patch move a projected occurrence to another day", async () => {
+    // The day of a recurring occurrence belongs to the rule. Forwarding
+    // `occursOn` would write a row on a date the rule does not name — the thing
+    // the check above exists to prevent, arriving through the front door.
+    const caller = createCaller(contextFor("active"));
+    await caller.update({ id: VIRTUAL_ID, occursOn: "2026-02-02", status: "done" });
+
+    expect(vi.mocked(occurrences.materialize).mock.calls[0][1]).toMatchObject({
+      occursOn: "2026-01-07",
+    });
+  });
+
+  it("rejects a malformed reference at the Zod boundary, before any query", async () => {
+    const caller = createCaller(contextFor("active"));
+
+    await expect(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      caller.update({ id: "series:nope:2026-01-07", status: "done" } as any),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(seriesRepo.findOwn).not.toHaveBeenCalled();
+  });
+
+  /**
+   * `task.remove` deliberately keeps a plain uuid: deleting an occurrence nobody
+   * has touched would be "skip this one occurrence", which is out of v1.
+   */
+  it("refuses to delete a projected occurrence", async () => {
+    const caller = createCaller(contextFor("active"));
+
+    await expect(caller.remove({ id: VIRTUAL_ID })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
+    expect(occurrences.remove).not.toHaveBeenCalled();
+  });
+});
+
+describe("the feed reaches the client", () => {
+  it("marks a stored row as not virtual", async () => {
+    vi.mocked(occurrences.listAll).mockResolvedValue([fakeRow()]);
+    const [task] = await createCaller(contextFor("active")).list();
+
+    expect(task.virtual).toBe(false);
+    expect(task.seriesId).toBeNull();
+  });
+
+  it("returns projections of a live series as virtual, with a parseable id", async () => {
+    vi.mocked(seriesRepo.listActive).mockResolvedValue([
+      {
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        userId: USER_ID,
+        title: "Team standup",
+        description: null,
+        freq: "weekly",
+        interval: 1,
+        byweekday: ["MO"],
+        monthMode: null,
+        monthDay: null,
+        nthWeek: null,
+        nthWeekday: null,
+        startsOn: "2026-01-05",
+        deadlineTime: "09:00:00",
+        endsMode: "never",
+        endsOn: null,
+        endsCount: null,
+        rrule: "FREQ=WEEKLY;BYDAY=MO",
+        reminderLeadMinutes: null,
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+        deletedAt: null,
+      },
+    ]);
+
+    const feed = await createCaller(contextFor("active")).listForDay({
+      occursOn: "2026-01-05",
+    });
+
+    expect(feed).toHaveLength(1);
+    expect(feed[0]).toMatchObject({
+      virtual: true,
+      seriesId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      occursOn: "2026-01-05",
+      title: "Team standup",
+      status: "todo",
+      progressPct: 0,
+    });
+    expect(feed[0].id).toBe("series:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb:2026-01-05");
+    // Serialised, because the link has no transformer.
+    expect(feed[0].deadlineAt).toBe("2026-01-05T09:00:00.000Z");
   });
 });

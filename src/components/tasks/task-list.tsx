@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc/client";
 
+import { EditSeriesDialog, NewSeriesButton } from "./new-series-button";
 import { NewTaskButton } from "./new-task-button";
 import { TaskCard } from "./task-card";
 import { TaskDialog } from "./task-dialog";
@@ -246,6 +247,15 @@ export function TaskListLayout({
   headingLevel = "h2",
 }: TaskListLayoutProps) {
   const [editing, setEditing] = React.useState<Task | null>(null);
+  /**
+   * Which repeat rule is being edited, if any. List-level state for the same
+   * reason `editing` is: a `<dialog>` per row would put dozens of modal elements
+   * in the document and let two open at once. Held as an id rather than an
+   * object because the row does not have the rule — see `EditSeriesDialog`.
+   */
+  const [editingSeriesId, setEditingSeriesId] = React.useState<string | null>(
+    null,
+  );
 
   const config = VIEWS[view];
   const columns = taskColumns(config.showDay);
@@ -278,7 +288,12 @@ export function TaskListLayout({
   return (
     <div className="space-y-3">
       {config.canCreate && (
-        <div className="flex justify-end">
+        <div className="flex flex-wrap justify-end gap-2">
+          {/* Two buttons, because they create two different things. A repeat
+              rule has no status, no progress and no deadline instant, so
+              folding it into the task dialog would leave half that form inert
+              — see the header of `series-dialog.tsx`. */}
+          <NewSeriesButton clock={clock} size="sm" />
           <NewTaskButton clock={clock} size="sm" />
         </div>
       )}
@@ -323,6 +338,7 @@ export function TaskListLayout({
                     showDay={config.showDay}
                     columnCount={columnCount}
                     onEdit={setEditing}
+                    onEditSeries={setEditingSeriesId}
                   />
                 ))
               )}
@@ -353,6 +369,7 @@ export function TaskListLayout({
               clock={clock}
               showDay={config.showDay}
               onEdit={setEditing}
+              onEditSeries={setEditingSeriesId}
             />
           ))
         )}
@@ -364,6 +381,14 @@ export function TaskListLayout({
           task={editing}
           clock={clock}
           onClose={() => setEditing(null)}
+        />
+      )}
+
+      {editingSeriesId && (
+        <EditSeriesDialog
+          seriesId={editingSeriesId}
+          clock={clock}
+          onClose={() => setEditingSeriesId(null)}
         />
       )}
     </div>

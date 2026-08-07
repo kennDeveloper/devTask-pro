@@ -77,3 +77,60 @@ export function dayFromToday(offset: number): string {
 export function hoursFromNow(offset: number): string {
   return new Date(Date.now() + offset * 3_600_000).toISOString();
 }
+
+/**
+ * Insert one repeat rule owned by `userId`. Returns its id.
+ *
+ * Only the columns 0005's cross-column CHECKs actually require are sent; the
+ * rest take their defaults. Same service-role reasoning as `seedTask` above:
+ * the arrangement is set up in SQL and the behaviour is exercised through the
+ * browser.
+ */
+export interface SeedSeriesInput {
+  title: string;
+  /** `YYYY-MM-DD`. Defaults to today. */
+  startsOn?: string;
+  /** `HH:MM`, or null for occurrences with no deadline. */
+  deadlineTime?: string | null;
+  /** RFC 5545 codes. Weekly only. */
+  byweekday?: string[];
+  freq?: "daily" | "weekly" | "monthly" | "yearly";
+  interval?: number;
+  endsCount?: number | null;
+}
+
+export async function seedSeries(
+  userId: string,
+  input: SeedSeriesInput,
+): Promise<string> {
+  const freq = input.freq ?? "daily";
+  const byweekday = freq === "weekly" ? (input.byweekday ?? ["MO"]) : [];
+
+  // Derived here rather than imported: `src/lib/recurrence/serialize.ts` is the
+  // authority, and an e2e helper reaching into src would couple the harness to
+  // an implementation it exists to exercise from the outside.
+  const parts = [`FREQ=${freq.toUpperCase()}`];
+  if (input.endsCount != null) parts.push(`COUNT=${input.endsCount}`);
+  if ((input.interval ?? 1) !== 1) parts.push(`INTERVAL=${input.interval}`);
+  if (byweekday.length > 0) parts.push(`BYDAY=${byweekday.join(",")}`);
+
+  const { data, error } = await serviceClient()
+    .from("task_series")
+    .insert({
+      user_id: userId,
+      title: input.title,
+      freq,
+      interval: input.interval ?? 1,
+      byweekday,
+      starts_on: input.startsOn ?? dayFromToday(0),
+      deadline_time: input.deadlineTime ?? null,
+      ends_mode: input.endsCount != null ? "after" : "never",
+      ends_count: input.endsCount ?? null,
+      rrule: parts.join(";"),
+    })
+    .select("id")
+    .single();
+
+  if (error) throw error;
+  return data.id as string;
+}
