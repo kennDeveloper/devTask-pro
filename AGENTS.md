@@ -208,6 +208,23 @@ pnpm admin:create        # idempotent bootstrap admin from ADMIN_EMAIL/ADMIN_PAS
 pick it up.** That is how the reminder job's SMTP port (54425) is exposed; without a restart
 `nodemailer` fails with `ECONNREFUSED`, which reads as a code bug and is not one.
 
+### Environment
+
+`.gitignore` covers `.env*`, so **there is no committed `.env.example`** — this list is the record.
+Alongside the Supabase and `ADMIN_*` variables phase 1 established, phase 6 adds four:
+
+```bash
+SMTP_HOST=127.0.0.1       # the local stack's catcher
+SMTP_PORT=54425           # [local_smtp] smtp_port; needs the restart described above
+EMAIL_FROM=reminders@devtask.local
+CRON_SECRET=...           # bearer the cron route requires; an unset value is a 401, not an open door
+# SMTP_USER / SMTP_PASS are omitted locally on purpose — the catcher wants no
+# authentication and offering it some makes the connection fail. Set both in production.
+```
+
+`pnpm test:integration` and `pnpm test:e2e` both read these from `.env.local`; without them the
+reminder suites fail at the transport rather than at an assertion.
+
 **Gates — all four must pass before any PR:**
 
 ```bash
