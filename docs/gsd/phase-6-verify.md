@@ -145,4 +145,24 @@ Checked, not assumed.
 ## Verdict
 
 **Phase 6 is complete and green.** With criteria 21 and 22 closed, **all 24 criteria in
-`devtask-pro-v1.md` now hold**, which completes the v1 milestone. Ready for `gsd-ship`.
+`devtask-pro-v1.md` now hold**, which completes the v1 milestone.
+
+## Shipped
+
+- **PR:** <https://github.com/kennDeveloper/devTask-pro/pull/6> — *Phase 6 — email reminders*
+- **Branch:** `phase-6-reminders` → `main`, open and **not merged**. The merge is a human's.
+- **Ship pre-flight:** all four gates re-run immediately before pushing, each exit 0. A late
+  `AGENTS.md` edit (recording the new environment variables) was followed by another typecheck and
+  lint, both exit 0.
+- **Diff reviewed:** 50 files, +4966/−22. No `.env` file is tracked — `.gitignore` covers `.env*`,
+  which is why the four new variables are documented in `AGENTS.md` rather than in a committed
+  `.env.example`. No secrets, no debug code, no stray files.
+
+### Follow-ups for the next iteration
+
+1. **Settle the cron cadence at deploy time.** Hobby's one-run-per-day cap would leave only the
+   "1 day before" preset meaningful.
+2. **Deep-link the reminder email**, which needs `/tasks` to read its filters from the URL.
+3. **`repos/tags.ts` names a `tags.test.ts` that does not exist** — its header claims a source-level
+   `dbAdmin` guard lives there. Unrelated to this phase and deliberately not fixed here; the guard
+   is worth actually writing.
