@@ -53,6 +53,12 @@ export interface SeriesFormValues {
   startsOn: string;
   /** `HH:MM` as read on a clock in `TaskClock.timeZone`, or `""` for no deadline. */
   deadlineTime: string;
+  /**
+   * The template lead, in minutes before each occurrence's deadline, or `null`
+   * for no reminder. Seeded onto an occurrence at materialisation and owned by
+   * the row thereafter, like every other series field.
+   */
+  reminderLeadMinutes: number | null;
   freq: RecurrenceFrequency;
   interval: number;
   byweekday: Weekday[];
@@ -71,6 +77,7 @@ export interface SeriesFormErrors {
   description?: string;
   startsOn?: string;
   deadlineTime?: string;
+  reminderLeadMinutes?: string;
   freq?: string;
   interval?: string;
   byweekday?: string;
@@ -102,6 +109,7 @@ const FIELD_FOR_PATH: Record<string, keyof SeriesFormErrors> = {
   description: "description",
   startsOn: "startsOn",
   deadlineTime: "deadlineTime",
+  reminderLeadMinutes: "reminderLeadMinutes",
   "rule.freq": "freq",
   "rule.interval": "interval",
   "rule.byweekday": "byweekday",
@@ -154,6 +162,7 @@ export function initialSeriesFormValues(
     description: series?.description ?? "",
     startsOn,
     deadlineTime: series?.deadlineTime ?? "",
+    reminderLeadMinutes: series?.reminderLeadMinutes ?? null,
     freq: series?.rule.freq ?? "weekly",
     interval: series?.rule.interval ?? 1,
     byweekday:
@@ -225,6 +234,12 @@ function toPayload(values: SeriesFormValues) {
     description: values.description,
     startsOn: values.startsOn,
     deadlineTime: values.deadlineTime,
+    // A lead counts back from the occurrence's deadline, so a series with no
+    // deadline time has nothing to count back from. The control is disabled in
+    // that state; this covers the deadline being cleared in the same submit.
+    reminderLeadMinutes: values.deadlineTime
+      ? values.reminderLeadMinutes
+      : null,
     rule: toRulePayload(values),
   };
 }

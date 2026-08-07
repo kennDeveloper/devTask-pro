@@ -101,6 +101,7 @@ function makeRow(overrides: Partial<TaskOccurrence> = {}): TaskOccurrence {
     deadlineAt: null,
     status: "todo",
     progressPct: 0,
+    reminderLeadMinutes: null,
     completedAt: null,
     createdAt: EPOCH,
     updatedAt: EPOCH,
@@ -216,6 +217,22 @@ describe("seriesOccurrences", () => {
     expect(first.status).toBe("todo");
     expect(first.progressPct).toBe(0);
     expect(first.completedAt).toBeNull();
+  });
+
+  it("carries the series' reminder lead, because nobody has touched this date", () => {
+    // The reminder job reads this feed rather than querying the tables, so a
+    // projection without its series' lead is a reminder that never fires for
+    // any occurrence the user has not already opened.
+    const projected = seriesOccurrences(
+      makeSeries({ reminderLeadMinutes: 30 }),
+      { from: "2026-01-05", to: "2026-01-07" },
+      "UTC",
+    );
+
+    expect(projected).not.toHaveLength(0);
+    for (const entry of projected) {
+      expect(entry.reminderLeadMinutes).toBe(30);
+    }
   });
 
   it("borrows the series' timestamps rather than reading a clock", () => {
@@ -489,6 +506,7 @@ describe("materializeOccurrence", () => {
       title: "Team standup",
       description: null,
       deadlineAt: new Date("2026-01-07T09:00:00.000Z"),
+      reminderLeadMinutes: null,
       status: "in_progress",
       progressPct: 60,
     });
@@ -503,6 +521,38 @@ describe("materializeOccurrence", () => {
     expect(
       vi.mocked(occurrences.materialize).mock.calls[0][1].deadlineAt?.toISOString(),
     ).toBe("2026-01-07T14:00:00.000Z");
+  });
+
+  it("seeds the reminder lead from the series when the caller sends none", async () => {
+    vi.mocked(seriesRepo.findOwn).mockResolvedValue(
+      makeSeries({ reminderLeadMinutes: 60 }),
+    );
+
+    await materializeOccurrence(CLAIMS, ref, { progressPct: 40 }, "UTC");
+
+    expect(
+      vi.mocked(occurrences.materialize).mock.calls[0][1].reminderLeadMinutes,
+    ).toBe(60);
+  });
+
+  it("lets the caller's lead win over the template, including switching it off", async () => {
+    // `null` is the off switch and must survive the `!== undefined` check —
+    // collapsing the two would make "no reminder for just this one" impossible
+    // to express on a series that has a template lead.
+    vi.mocked(seriesRepo.findOwn).mockResolvedValue(
+      makeSeries({ reminderLeadMinutes: 60 }),
+    );
+
+    await materializeOccurrence(
+      CLAIMS,
+      ref,
+      { reminderLeadMinutes: null },
+      "UTC",
+    );
+
+    expect(
+      vi.mocked(occurrences.materialize).mock.calls[0][1].reminderLeadMinutes,
+    ).toBeNull();
   });
 
   it("returns null when the series is not the caller's or is deleted", async () => {

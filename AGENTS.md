@@ -41,8 +41,15 @@ guarantee.
   transaction, to the `authenticated` role carrying that user's JWT claims. Postgres then enforces
   the RLS policies on every statement. **All user-facing reads and writes go through this.**
 - **`dbAdmin`** (`src/lib/db/client.ts`) — connects as the database owner and **bypasses RLS
-  entirely**. Legitimate callers: the reminder job (phase 6), admin account operations on
-  `profiles`, migrations, and `scripts/create-admin.ts`. Nothing else.
+  entirely**. Legitimate callers: admin account operations on `profiles`, migrations, and
+  `scripts/create-admin.ts`. Nothing else.
+
+  The reminder job used to be on that list and no longer is, which is worth knowing before you add
+  the next background job. It escalates **only** to enumerate active accounts
+  (`profiles.listActiveRecipientsAsAdmin`, inside the same fence as every other admin read) and then
+  opens `withUser({ sub })` per account for everything else. `withUser` needs only `{ sub }`, not a
+  real JWT — so a job with no session can still run *inside* the policies rather than around them.
+  Do that instead of reaching for `dbAdmin`; `src/lib/reminders/run.ts` is the worked example.
 
 **No module exports a bare `db`.** That name is absent on purpose — there is no innocuous import
 that hands you an unscoped connection.
@@ -55,7 +62,13 @@ first — do not route around it in code.
 `tests/integration/rls-boundary.test.ts` is the proof, not a formality. Keep it passing. Its
 `task_occurrence` block is criterion 6 — an admin session reading real task data and getting zero
 rows. When a phase adds a table holding user data, add a block there too; the two-user-plus-admin
-harness is already built.
+harness is already built. `reminder_log` (0007) is the newest, and it also asserts at the *privilege*
+level — `authenticated` holds exactly `SELECT` and `INSERT` — because that table has no `update` or
+`delete` policy to consult, deliberately.
+
+`src/lib/admin/isolation.test.ts` asserts the exact set of files importing `dbAdmin`. **A failure
+there is the guard working, not a broken test.** Add the file with its reason, or — far more often —
+use `withUser()` instead.
 
 ## Database
 
@@ -186,10 +199,31 @@ that; before treating a timeout as a regression, run the spec on its own and see
 
 ```bash
 pnpm dev                 # app on :3000
-pnpm db:start            # local Supabase (Docker); Studio :54423, Mailpit :54424
+pnpm db:start            # local Supabase (Docker); Studio :54423, Mailpit :54424, SMTP :54425
 pnpm db:reset            # re-apply migrations
 pnpm admin:create        # idempotent bootstrap admin from ADMIN_EMAIL/ADMIN_PASSWORD
 ```
+
+**A `supabase/config.toml` change needs `supabase stop` then `pnpm db:start` — `db:reset` will not
+pick it up.** That is how the reminder job's SMTP port (54425) is exposed; without a restart
+`nodemailer` fails with `ECONNREFUSED`, which reads as a code bug and is not one.
+
+### Environment
+
+`.gitignore` covers `.env*`, so **there is no committed `.env.example`** — this list is the record.
+Alongside the Supabase and `ADMIN_*` variables phase 1 established, phase 6 adds four:
+
+```bash
+SMTP_HOST=127.0.0.1       # the local stack's catcher
+SMTP_PORT=54425           # [local_smtp] smtp_port; needs the restart described above
+EMAIL_FROM=reminders@devtask.local
+CRON_SECRET=...           # bearer the cron route requires; an unset value is a 401, not an open door
+# SMTP_USER / SMTP_PASS are omitted locally on purpose — the catcher wants no
+# authentication and offering it some makes the connection fail. Set both in production.
+```
+
+`pnpm test:integration` and `pnpm test:e2e` both read these from `.env.local`; without them the
+reminder suites fail at the transport rather than at an assertion.
 
 **Gates — all four must pass before any PR:**
 

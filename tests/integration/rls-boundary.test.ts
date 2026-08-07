@@ -8,6 +8,7 @@ import { withUser } from "@/lib/db/rls";
 import {
   occurrenceTags,
   profiles,
+  reminderLog,
   seriesTags,
   tags,
   taskOccurrence,
@@ -1350,5 +1351,198 @@ describe("tags — the criterion 6 proof for the labelling tables", () => {
         tx.insert(tags).values({ userId: userB, name: "a private label" }),
       ),
     ).resolves.toBeDefined();
+  });
+});
+
+describe("reminder_log — the criterion 6 proof for the delivery ledger", () => {
+  let taskOfAForReminders: string;
+  let taskOfBForReminders: string;
+
+  beforeAll(async () => {
+    const [ta] = await dbAdmin
+      .insert(taskOccurrence)
+      .values({
+        userId: userA,
+        title: "A remindable",
+        occursOn: "2026-04-01",
+        deadlineAt: new Date("2026-04-01T09:00:00.000Z"),
+        reminderLeadMinutes: 30,
+      })
+      .returning({ id: taskOccurrence.id });
+    const [tb] = await dbAdmin
+      .insert(taskOccurrence)
+      .values({
+        userId: userB,
+        title: "B remindable",
+        occursOn: "2026-04-01",
+        deadlineAt: new Date("2026-04-01T09:00:00.000Z"),
+        reminderLeadMinutes: 30,
+      })
+      .returning({ id: taskOccurrence.id });
+
+    taskOfAForReminders = ta.id;
+    taskOfBForReminders = tb.id;
+
+    await dbAdmin.insert(reminderLog).values([
+      {
+        userId: userA,
+        occurrenceId: taskOfAForReminders,
+        occursOn: "2026-04-01",
+        deadlineAt: new Date("2026-04-01T09:00:00.000Z"),
+      },
+      {
+        userId: userB,
+        occurrenceId: taskOfBForReminders,
+        occursOn: "2026-04-01",
+        deadlineAt: new Date("2026-04-01T09:00:00.000Z"),
+      },
+    ]);
+  });
+
+  /**
+   * A ledger row says "this person was emailed about this task on this date",
+   * which describes somebody's private work as surely as the task itself does.
+   * The table is written by a background job rather than by a person, which is
+   * exactly why it needs asserting: nothing in the UI would ever reveal a leak.
+   */
+  it("an ADMIN session reading reminder_log returns ZERO rows", async () => {
+    const seen = await withUser({ sub: adminUser, email: EMAIL_ADMIN }, (tx) =>
+      tx.select().from(reminderLog),
+    );
+
+    expect(seen).toHaveLength(0);
+  });
+
+  it("returns exactly the caller's own ledger rows", async () => {
+    const rows = await withUser({ sub: userA, email: EMAIL_A }, (tx) =>
+      tx.select().from(reminderLog),
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].occurrenceId).toBe(taskOfAForReminders);
+  });
+
+  it("cannot see another user's row, even asked for by occurrence id", async () => {
+    const rows = await withUser({ sub: userB, email: EMAIL_B }, (tx) =>
+      tx
+        .select()
+        .from(reminderLog)
+        .where(eq(reminderLog.occurrenceId, taskOfAForReminders)),
+    );
+
+    expect(rows).toHaveLength(0);
+  });
+
+  it("cannot write a ledger row owned by somebody else", async () => {
+    // Without the insert policy's `with check`, this would let one account
+    // suppress another's reminders by pre-claiming them.
+    const attempt = await withUser({ sub: userB, email: EMAIL_B }, (tx) =>
+      tx.insert(reminderLog).values({
+        userId: userA,
+        occurrenceId: taskOfAForReminders,
+        occursOn: "2026-04-02",
+        deadlineAt: new Date("2026-04-02T09:00:00.000Z"),
+      }),
+    ).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+
+    expect(attempt).not.toBeNull();
+  });
+
+  /**
+   * THE APPEND-ONLY GUARANTEE, WHICH IS WHAT CRITERION 21 RESTS ON.
+   *
+   * 0007 grants `authenticated` only `select` and `insert`, deliberately, and
+   * says so at length. An account that could delete its own ledger rows could
+   * make the job send the same reminder again; one that could update them could
+   * move a `sent_at` and achieve the same thing. Asserted at the privilege level
+   * rather than through a policy, because there is no policy to consult — the
+   * grant is simply absent.
+   */
+  it("authenticated holds no UPDATE or DELETE privilege on the ledger", async () => {
+    const rows = await dbAdmin.execute(sql`
+      select privilege_type
+        from information_schema.role_table_grants
+       where table_schema = 'public'
+         and table_name = 'reminder_log'
+         and grantee = 'authenticated'
+       order by privilege_type
+    `);
+
+    const granted = [...rows].map(
+      (row) => (row as { privilege_type: string }).privilege_type,
+    );
+
+    expect(granted).toEqual(["INSERT", "SELECT"]);
+  });
+
+  it("anon holds nothing at all — there is no publicly readable reminder", async () => {
+    const rows = await dbAdmin.execute(sql`
+      select privilege_type
+        from information_schema.role_table_grants
+       where table_schema = 'public'
+         and table_name = 'reminder_log'
+         and grantee = 'anon'
+    `);
+
+    expect([...rows]).toHaveLength(0);
+  });
+
+  it("a delete aimed at one's own row removes nothing, for want of the privilege", async () => {
+    const attempt = await withUser({ sub: userA, email: EMAIL_A }, (tx) =>
+      tx
+        .delete(reminderLog)
+        .where(eq(reminderLog.occurrenceId, taskOfAForReminders)),
+    ).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+
+    // Either it raises on the missing privilege or it silently matches nothing;
+    // what matters is that the row survives.
+    const survivors = await dbAdmin
+      .select()
+      .from(reminderLog)
+      .where(eq(reminderLog.occurrenceId, taskOfAForReminders));
+
+    expect(survivors).toHaveLength(1);
+    expect(attempt).not.toBeNull();
+  });
+
+  it("dbAdmin still sees every ledger row — the escalation path works", async () => {
+    const ids = (await dbAdmin.select().from(reminderLog)).map(
+      (row) => row.occurrenceId,
+    );
+
+    expect(ids).toEqual(
+      expect.arrayContaining([taskOfAForReminders, taskOfBForReminders]),
+    );
+  });
+
+  /**
+   * The at-most-once index, proven at the database rather than through the repo.
+   * `reminders.claim()` depends on this conflict actually firing; if the partial
+   * index were dropped or made non-unique, the repo would happily report `true`
+   * twice and criterion 21 would fail silently.
+   */
+  it("a second row for the same occurrence conflicts", async () => {
+    const duplicate = await withUser({ sub: userA, email: EMAIL_A }, (tx) =>
+      tx.insert(reminderLog).values({
+        userId: userA,
+        occurrenceId: taskOfAForReminders,
+        occursOn: "2026-04-01",
+        deadlineAt: new Date("2026-04-01T09:00:00.000Z"),
+      }),
+    ).then(
+      () => null,
+      (e: unknown) => e as Error & { cause?: { message?: string } },
+    );
+
+    expect(duplicate).not.toBeNull();
+    expect(duplicate!.cause?.message ?? duplicate!.message).toMatch(
+      /reminder_log_occurrence_uniq|duplicate key/i,
+    );
   });
 });

@@ -293,6 +293,46 @@ describe("listAccountsAsAdmin", () => {
   });
 });
 
+describe("listActiveRecipientsAsAdmin", () => {
+  it("filters to active accounts, and only active", async () => {
+    // The same line `activeProcedure` draws. Mailing a suspended account about
+    // work it cannot open is the same violation delivered by post.
+    const connection = armAdmin([[]]);
+    await profilesRepo.listActiveRecipientsAsAdmin();
+
+    const { sql, params } = shape(connection.chains[0].argOf("where"));
+    expect(sql).toBe('"profiles"."status" = ?');
+    expect(params).toEqual(["active"]);
+  });
+
+  it("selects only what an email needs, and nothing task-shaped", async () => {
+    // An exact key set rather than a `not.toContain`, for the reason the
+    // account-list projection gives: a column added to `profiles` later must
+    // not arrive in the job's hands without somebody deciding it should.
+    const connection = armAdmin([[]]);
+    await profilesRepo.listActiveRecipientsAsAdmin();
+
+    const projection = connection.chains[0].argOf("select") as Record<
+      string,
+      unknown
+    >;
+    expect(Object.keys(projection).sort()).toEqual(["email", "id", "timezone"]);
+  });
+
+  it("is not capped — a truncated job is a person who silently stopped being reminded", async () => {
+    const connection = armAdmin([[]]);
+    await profilesRepo.listActiveRecipientsAsAdmin();
+
+    expect(connection.chains[0].chain).toEqual([
+      "select",
+      "from",
+      "where",
+      "orderBy",
+    ]);
+    expect(connection.chains[0].chain).not.toContain("limit");
+  });
+});
+
 describe("findAccountAsAdmin", () => {
   it("filters on the requested id and returns null when there is no row", async () => {
     const connection = armAdmin([[]]);

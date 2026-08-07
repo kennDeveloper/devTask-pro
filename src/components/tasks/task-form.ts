@@ -49,6 +49,13 @@ export interface TaskFormValues {
   deadlineLocal: string;
   status: TaskStatus;
   progressPct: number;
+  /**
+   * Minutes before the deadline, or `null` for no reminder. A number rather than
+   * a string, unlike the other controls: `ReminderSelect` owns the conversion at
+   * its own boundary, because "none" has to become `null` rather than `""` and
+   * the two are different values to the schema.
+   */
+  reminderLeadMinutes: number | null;
 }
 
 export interface TaskFormErrors {
@@ -58,6 +65,7 @@ export interface TaskFormErrors {
   deadlineLocal?: string;
   status?: string;
   progressPct?: string;
+  reminderLeadMinutes?: string;
   /** An issue that names no field — a whole-object rule such as the refine. */
   form?: string;
 }
@@ -77,6 +85,7 @@ const FIELD_FOR_PATH: Record<string, keyof TaskFormErrors> = {
   deadlineAt: "deadlineLocal",
   status: "status",
   progressPct: "progressPct",
+  reminderLeadMinutes: "reminderLeadMinutes",
 };
 
 /**
@@ -121,6 +130,8 @@ export function initialTaskFormValues(
       deadlineLocal: "",
       status: "todo",
       progressPct: 0,
+      // Off by default. A task reminds only because somebody asked it to.
+      reminderLeadMinutes: null,
     };
   }
 
@@ -133,6 +144,9 @@ export function initialTaskFormValues(
       : "",
     status: task.status,
     progressPct: task.progressPct,
+    // A projected occurrence carries its series' template lead, so editing one
+    // shows what it would actually remind at rather than an empty control.
+    reminderLeadMinutes: task.reminderLeadMinutes,
   };
 }
 
@@ -156,6 +170,11 @@ function wireValues(values: TaskFormValues, timeZone: string) {
     deadlineAt,
     status: values.status,
     progressPct: values.progressPct,
+    // A deadline the user just cleared takes the reminder with it: a lead with
+    // nothing to count back from would sit in the database looking set while
+    // `dueReminders` silently ignored it. The control is disabled in that state,
+    // so this is the case where the deadline is cleared in the same submit.
+    reminderLeadMinutes: deadlineAt === null ? null : values.reminderLeadMinutes,
   };
 }
 
@@ -248,6 +267,14 @@ export function buildUpdatePatch(
   // and the reason `src/lib/tasks/progress.ts` refuses to import `status.ts`.
   if (next.progressPct !== undefined && next.progressPct !== task.progressPct) {
     patch.progressPct = next.progressPct;
+    changed = true;
+  }
+
+  // `undefined` cannot reach here — `wireValues` always supplies a number or an
+  // explicit `null` — so a straight comparison is the whole rule, and `null`
+  // being a real value is why this is `!==` rather than a truthiness check.
+  if (next.reminderLeadMinutes !== task.reminderLeadMinutes) {
+    patch.reminderLeadMinutes = next.reminderLeadMinutes;
     changed = true;
   }
 

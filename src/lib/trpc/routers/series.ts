@@ -72,6 +72,8 @@ function toPublicSeries(
     // Postgres reads a `time` column back as `HH:MM:SS`; the editor's control
     // speaks `HH:MM`. Trimmed once, here, rather than in each consumer.
     deadlineTime: series.deadlineTime ? series.deadlineTime.slice(0, 5) : null,
+    /** The template lead, seeded onto each occurrence as it materialises. */
+    reminderLeadMinutes: series.reminderLeadMinutes,
     rule: ruleFromSeries(series),
     rrule: series.rrule,
     /** The template tags, copied onto each occurrence as it materialises. */
@@ -139,6 +141,7 @@ export const seriesRouter = router({
         description: input.description ?? null,
         startsOn: input.startsOn,
         deadlineTime: input.deadlineTime ?? null,
+        reminderLeadMinutes: input.reminderLeadMinutes ?? null,
         rule: toRecurrenceRule(input.rule),
       });
 
@@ -173,6 +176,7 @@ export const seriesRouter = router({
         description: input.description ?? null,
         startsOn: input.startsOn,
         deadlineTime: input.deadlineTime ?? null,
+        reminderLeadMinutes: input.reminderLeadMinutes ?? null,
         rule: toRecurrenceRule(input.rule),
       });
 

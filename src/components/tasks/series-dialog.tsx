@@ -37,6 +37,7 @@ import {
 } from "./series-form";
 import { TagPicker } from "@/components/tags/tag-picker";
 
+import { ReminderSelect } from "./reminder-select";
 import { useSeriesActions } from "./use-series-actions";
 import { WeekdayPicker } from "./weekday-picker";
 
@@ -292,6 +293,30 @@ export function SeriesDialog({
             />
           </Field>
         </div>
+
+        {/* The template reminder. Like every other series field it seeds an
+            occurrence when somebody first touches it and then lets go — so
+            changing it here reaches future untouched occurrences only, and an
+            occurrence with a lead of its own keeps it. Disabled without a due
+            time, because a lead has nothing to count back from. */}
+        <Field
+          label="Reminder"
+          htmlFor={`${fieldId}-reminder`}
+          optional
+          error={errors.reminderLeadMinutes}
+          hint={
+            values.deadlineTime
+              ? `Emailed before each occurrence, ${clock.timeZone} time.`
+              : "Set a due time to enable reminders."
+          }
+        >
+          <ReminderSelect
+            id={`${fieldId}-reminder`}
+            value={values.reminderLeadMinutes}
+            disabled={!values.deadlineTime}
+            onChange={(lead) => setValue("reminderLeadMinutes", lead)}
+          />
+        </Field>
 
         <div className="grid gap-5 sm:grid-cols-2">
           <Field

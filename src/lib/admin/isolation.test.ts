@@ -181,6 +181,19 @@ describe("criterion 9 — dbAdmin appears only where it is sanctioned", () => {
     // policy, and if that policy were broken they would silently fail to exist
     // and every assertion after them would pass against an empty table.
     "tests/integration/series.test.ts",
+    // Phase 6's reminder suite, on that same sanction and for one more reason of
+    // its own. Its central assertion is that running the job leaves
+    // `task_occurrence` **byte-identical** — which can only be checked by
+    // reading the table with a connection the job's own policies do not filter.
+    // A scoped read would show one user's rows and could not tell "the job wrote
+    // nothing" apart from "the job wrote something I cannot see". It also has to
+    // set `profiles.status` to `active`, which the 0003 escalation guard refuses
+    // through a session by design.
+    //
+    // Note what did NOT need adding: no file under `src/**`. The job escalates
+    // only through `profiles.listActiveRecipientsAsAdmin`, inside the fence that
+    // already existed, and reads every task through `withUser()`.
+    "tests/integration/reminders.test.ts",
   ]);
 
   /**

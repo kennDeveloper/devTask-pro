@@ -121,6 +121,15 @@ export interface ListedOccurrence {
   deadlineAt: Date | null;
   status: TaskStatus;
   progressPct: number;
+  /**
+   * Minutes before `deadlineAt` to email a reminder, or null for none.
+   *
+   * A row carries its own; a projection carries its **series'** template value.
+   * The reminder job reads this feed rather than querying the tables itself, so
+   * this field is what lets it see a not-yet-materialised occurrence's lead —
+   * which is the whole reason it never has to write a row to send an email.
+   */
+  reminderLeadMinutes: number | null;
   completedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -209,6 +218,7 @@ export function fromRow(row: TaskOccurrence, tags: Tag[] = []): ListedOccurrence
     deadlineAt: row.deadlineAt,
     status: row.status,
     progressPct: row.progressPct,
+    reminderLeadMinutes: row.reminderLeadMinutes,
     completedAt: row.completedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -241,6 +251,9 @@ export function fromSeries(
     deadlineAt: occurrenceDeadline(series, occursOn, timeZone),
     status: "todo",
     progressPct: 0,
+    // The series' template lead, exactly as the tags and the deadline are the
+    // series'. Nobody has touched this date, so there is nothing of its own yet.
+    reminderLeadMinutes: series.reminderLeadMinutes,
     completedAt: null,
     createdAt: series.createdAt,
     updatedAt: series.updatedAt,
@@ -469,6 +482,7 @@ export interface TouchOccurrencePatch {
   deadlineAt?: Date | null;
   status?: TaskStatus;
   progressPct?: number;
+  reminderLeadMinutes?: number | null;
 }
 
 /**
@@ -522,6 +536,13 @@ export async function materializeOccurrence(
       patch.deadlineAt !== undefined
         ? patch.deadlineAt
         : occurrenceDeadline(series, ref.occursOn, timeZone),
+    // Same shape as the deadline directly above: what the caller sent wins, and
+    // the series supplies it otherwise. This is the moment the template lead
+    // stops being the template's and becomes the row's.
+    reminderLeadMinutes:
+      patch.reminderLeadMinutes !== undefined
+        ? patch.reminderLeadMinutes
+        : series.reminderLeadMinutes,
     status: patch.status,
     progressPct: patch.progressPct,
   });

@@ -13,6 +13,7 @@ import { DESCRIPTION_MAX_LENGTH, TITLE_MAX_LENGTH } from "@/lib/tasks/validators
 import { TagPicker } from "@/components/tags/tag-picker";
 
 import { ProgressControl } from "./progress-control";
+import { ReminderSelect } from "./reminder-select";
 import { StatusControl } from "./status-control";
 import {
   buildCreateInput,
@@ -103,6 +104,13 @@ export function TaskDialog({ open, onClose, clock, task = null }: TaskDialogProp
    *   change what a series produces.
    */
   const recurring = Boolean(task?.seriesId);
+
+  /**
+   * Read from the *current* form state, not from the task — so clearing the
+   * deadline field disables the reminder control in the same keystroke rather
+   * than after a save.
+   */
+  const hasDeadline = values.deadlineLocal !== "";
 
   function setValue<K extends keyof TaskFormValues>(
     field: K,
@@ -317,13 +325,38 @@ export function TaskDialog({ open, onClose, clock, task = null }: TaskDialogProp
           </Field>
         </div>
 
-        <Field label="Status" htmlFor={`${fieldId}-status`} error={errors.status}>
-          <StatusControl
-            id={`${fieldId}-status`}
-            value={values.status}
-            onChange={(status) => setValue("status", status)}
-          />
-        </Field>
+        <div className="grid gap-5 sm:grid-cols-2">
+          <Field label="Status" htmlFor={`${fieldId}-status`} error={errors.status}>
+            <StatusControl
+              id={`${fieldId}-status`}
+              value={values.status}
+              onChange={(status) => setValue("status", status)}
+            />
+          </Field>
+
+          {/* A lead counts back from the deadline, so without one there is
+              nothing to count back from and the control has nothing to mean.
+              Disabled rather than hidden: a control that appears when you fill
+              in a deadline is a layout that moves under the cursor. */}
+          <Field
+            label="Reminder"
+            htmlFor={`${fieldId}-reminder`}
+            optional
+            error={errors.reminderLeadMinutes}
+            hint={
+              hasDeadline
+                ? `Emailed to you, ${clock.timeZone} time.`
+                : "Set a deadline to enable reminders."
+            }
+          >
+            <ReminderSelect
+              id={`${fieldId}-reminder`}
+              value={values.reminderLeadMinutes}
+              disabled={!hasDeadline}
+              onChange={(lead) => setValue("reminderLeadMinutes", lead)}
+            />
+          </Field>
+        </div>
 
         <TagPicker
           id={`${fieldId}-tags`}
