@@ -135,12 +135,38 @@ These become the `gsd-verify` checklist.
   agree. Browser-local-only would leave the server unable to compute a correct overdue filter.
 - **Series carries template tags, copied onto occurrences at materialization** — consistent with how
   every other series field propagates; editing series tags affects future untouched occurrences only.
-- **Reminders: Vercel Cron → a route handler, delivery via Resend** — the project deploys to Vercel
-  per kickoff, so cron is in-platform with nothing extra to provision. Revisit if email volume or
-  deliverability needs grow; the send is behind one module so the provider is swappable.
-- **The reminder job materializes occurrences inside its horizon** — an unavoidable consequence of
-  lazy materialization plus reminders. Reads still never depend on the job; only email does. A
-  `reminder_log` row per `(occurrence_id)` enforces at-most-once delivery.
+- **Reminders: Vercel Cron → a route handler, delivery over SMTP** — the project deploys to Vercel
+  per kickoff, so cron is in-platform with nothing extra to provision. *Amended in phase 6:* the
+  transport is SMTP rather than Resend's HTTP API. Resend speaks SMTP too, so this satisfies the
+  original intent while letting the local stack's mail catcher exercise the very transport that runs
+  in production — instead of a production-only branch nothing local ever executes.
+- ~~**The reminder job materializes occurrences inside its horizon**~~ — **superseded in phase 6.
+  The job writes nothing to `task_occurrence`.**
+
+  This decision was made before the recurrence engine existed, and phase 3 then built criteria 15 and
+  17 on the opposite premise. `src/lib/db/repos/series.ts` states the mechanism outright: untouched
+  future occurrences vanish on a rule edit or a series delete **because they were never rows**. There
+  is no untouched-row cleanup anywhere in the codebase, because until phase 6 nothing but a user's
+  own touch could create a row. A materializing job would therefore leave rows on dates a later rule
+  edit no longer names — and the read path is a union with rows winning, not a filter, so they would
+  still appear — and rows that outlive a soft-deleted series.
+
+  Instead, `reminder_log` carries the occurrence's **identity** rather than its row id:
+  `(series_id, occurs_on)` for an occurrence of a series, materialized or not, and `(occurrence_id)`
+  for a one-off. Because that identity does not change when somebody later touches the date, no
+  second reminder fires after materialization — a property that falls out rather than needing
+  handling. Two partial unique indexes enforce at-most-once; the job claims a row with
+  `on conflict do nothing` and sends only if the claim won.
+
+  The trade-off, taken deliberately: a send that throws after a successful claim is a **missed**
+  reminder, not a retried one. The criterion is *at most once*.
+
+  See `supabase/migrations/0007_reminders.sql` and `docs/gsd/phase-6-discuss.md`.
+- **The reminder job runs inside RLS** — phase 6. It escalates once, through
+  `profiles.listActiveRecipientsAsAdmin()` inside the existing fence, to learn who exists; then opens
+  `withUser({ sub })` per account and reads that person's tasks through the ordinary feed. So the
+  reminder sees exactly what the user sees, and phase 6 adds no application module to the sanctioned
+  `dbAdmin` set. The cost is one transaction per account per run, which is the right trade here.
 
 ## Constraints
 
@@ -208,7 +234,14 @@ task_occurrence          the trackable unit; one-off ⇒ series_id NULL
 tags               id, user_id, name, color   UNIQUE (user_id, lower(name))
 series_tags        series_id, tag_id          -- template
 occurrence_tags    occurrence_id, tag_id      -- actual
-reminder_log       occurrence_id PK, sent_at  -- at-most-once
+
+reminder_log       -- at-most-once. AMENDED IN PHASE 6, see the decision above:
+  id, user_id      -- keyed by the occurrence's IDENTITY, not by a row id, because
+  series_id?       -- most upcoming occurrences are projections and the job must
+  occurrence_id?   -- not materialise them. Exactly one of the two is set.
+  occurs_on, deadline_at, sent_at
+  UNIQUE (series_id, occurs_on) WHERE series_id IS NOT NULL
+  UNIQUE (occurrence_id)        WHERE occurrence_id IS NOT NULL
 ```
 
 RLS: `profiles`, `task_series`, `task_occurrence`, `tags`, and both join tables all carry
