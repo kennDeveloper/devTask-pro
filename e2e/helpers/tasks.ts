@@ -41,6 +41,17 @@ export interface SeedTaskInput {
   status?: SeededTaskStatus;
   progressPct?: number;
   description?: string | null;
+  /**
+   * Minutes before `deadlineAt` to remind, or null for none.
+   *
+   * Seeded for the same reason the deadline is: the reminder job compares
+   * against `now()`, so a spec needs a deadline a known number of minutes ahead
+   * of the instant the request lands — and typing that into a zoneless
+   * `datetime-local` means doing in the spec the arithmetic the app exists to
+   * do. `e2e/reminders.spec.ts` still sets a lead through the real dialog and
+   * asserts it persisted; the seeded row is only the arrangement.
+   */
+  reminderLeadMinutes?: number | null;
 }
 
 /** Insert one task owned by `userId`. Returns its id. */
@@ -58,6 +69,7 @@ export async function seedTask(
       deadline_at: input.deadlineAt ?? null,
       status: input.status ?? "todo",
       progress_pct: input.progressPct ?? 0,
+      reminder_lead_minutes: input.reminderLeadMinutes ?? null,
     })
     .select("id")
     .single();
