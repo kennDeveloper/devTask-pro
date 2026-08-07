@@ -50,6 +50,7 @@ function existing(overrides: Partial<Series> = {}): Series {
       endsCount: null,
     },
     rrule: "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE",
+    tags: [],
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     ...overrides,

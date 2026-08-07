@@ -105,7 +105,10 @@ async function occurrenceDays(series: { id: string }): Promise<string[]> {
 
   const projected = live.flatMap((s) => feed.seriesOccurrences(s, WINDOW, "UTC"));
   return feed
-    .mergeOccurrences(rows.map(feed.fromRow), projected)
+    .mergeOccurrences(
+      rows.map((row) => feed.fromRow(row)),
+      projected,
+    )
     .map((o) => o.occursOn)
     .sort();
 }

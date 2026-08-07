@@ -1,12 +1,14 @@
 import * as occurrences from "@/lib/db/repos/occurrences";
 import * as seriesRepo from "@/lib/db/repos/series";
+import * as tagsRepo from "@/lib/db/repos/tags";
 import type { UserClaims } from "@/lib/db/rls";
-import type { TaskOccurrence, TaskSeries, TaskStatus } from "@/lib/db/schema";
+import type { Tag, TaskOccurrence, TaskSeries, TaskStatus } from "@/lib/db/schema";
 import { parseIsoDate } from "@/lib/recurrence/calendar";
 import { expand } from "@/lib/recurrence/expand";
 import type { RecurrenceRule } from "@/lib/recurrence/rule";
 import { addDaysToIsoDate, instantFromWallClock } from "@/lib/time/day-boundary";
 
+import { matchesFilters, normaliseFilters, type TaskFilters } from "./filters";
 import { isOverdue } from "./overdue";
 import {
   virtualOccurrenceId,
@@ -124,6 +126,30 @@ export interface ListedOccurrence {
   updatedAt: Date;
   /** True when this is a projection of a rule rather than a stored row. */
   virtual: boolean;
+  /**
+   * The labels on this occurrence.
+   *
+   * A row carries its own, written when it materialised. A projection carries
+   * its **series'** template tags, resolved by the feed — so the filter, the
+   * row, the card and `toPublicTask` all treat the two identically and no
+   * component above this file has to know which kind it is looking at.
+   */
+  tags: Tag[];
+}
+
+/** `ownerId -> tags`, built once per read from one flat join query. */
+export function groupTags(
+  links: ReadonlyArray<{ ownerId: string; tag: Tag }>,
+): Map<string, Tag[]> {
+  const grouped = new Map<string, Tag[]>();
+
+  for (const { ownerId, tag } of links) {
+    const existing = grouped.get(ownerId);
+    if (existing) existing.push(tag);
+    else grouped.set(ownerId, [tag]);
+  }
+
+  return grouped;
 }
 
 /** The rule columns of a series row, as the engine's own type. */
@@ -173,7 +199,7 @@ export function occurrenceDeadline(
 }
 
 /** A stored row as a list entry. */
-export function fromRow(row: TaskOccurrence): ListedOccurrence {
+export function fromRow(row: TaskOccurrence, tags: Tag[] = []): ListedOccurrence {
   return {
     id: row.id,
     seriesId: row.seriesId,
@@ -187,6 +213,7 @@ export function fromRow(row: TaskOccurrence): ListedOccurrence {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     virtual: false,
+    tags,
   };
 }
 
@@ -203,6 +230,7 @@ export function fromSeries(
   series: TaskSeries,
   occursOn: string,
   timeZone: string,
+  tags: Tag[] = [],
 ): ListedOccurrence {
   return {
     id: virtualOccurrenceId(series.id, occursOn),
@@ -217,6 +245,7 @@ export function fromSeries(
     createdAt: series.createdAt,
     updatedAt: series.updatedAt,
     virtual: true,
+    tags,
   };
 }
 
@@ -225,9 +254,10 @@ export function seriesOccurrences(
   series: TaskSeries,
   window: FeedWindow,
   timeZone: string,
+  tags: Tag[] = [],
 ): ListedOccurrence[] {
   return expand(ruleFromSeries(series), series.startsOn, window).map((day) =>
-    fromSeries(series, day, timeZone),
+    fromSeries(series, day, timeZone, tags),
   );
 }
 
@@ -288,6 +318,34 @@ function byDayDescending(a: ListedOccurrence, b: ListedOccurrence): number {
   return byDeadlineThenTitle(a, b);
 }
 
+/**
+ * Every tag on the page, in **two** queries.
+ *
+ * One for the rows and one for the series, regardless of how many occurrences
+ * are on screen — a daily series over a 91-day window is 91 projections and
+ * still one query, because they all share a rule. Resolving tags per occurrence
+ * instead would make a list read N+1 in the most literal way.
+ *
+ * Both run in a **single** `withUser()`: the transaction, not the statement, is
+ * what costs. See `tagsForFeed`.
+ */
+async function loadTags(
+  claims: UserClaims,
+  rows: readonly TaskOccurrence[],
+  live: readonly TaskSeries[],
+): Promise<{ rowTags: Map<string, Tag[]>; seriesTags: Map<string, Tag[]> }> {
+  const { occurrenceLinks, seriesLinks } = await tagsRepo.tagsForFeed(
+    claims,
+    rows.map((row) => row.id),
+    live.map((series) => series.id),
+  );
+
+  return {
+    rowTags: groupTags(occurrenceLinks),
+    seriesTags: groupTags(seriesLinks),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The three reads
 // ---------------------------------------------------------------------------
@@ -303,20 +361,28 @@ export async function listDayFeed(
   claims: UserClaims,
   day: string,
   timeZone: string,
+  filters?: TaskFilters,
 ): Promise<ListedOccurrence[]> {
+  const active = normaliseFilters(filters);
+
   const [rows, live] = await Promise.all([
-    occurrences.listForDay(claims, day),
+    occurrences.listForDay(claims, day, active),
     seriesRepo.listActive(claims),
   ]);
 
-  const window = feedWindow("day", day);
-  const virtual = live.flatMap((series) =>
-    seriesOccurrences(series, window, timeZone),
-  );
+  const { rowTags, seriesTags } = await loadTags(claims, rows, live);
 
-  return mergeOccurrences(rows.map(fromRow), virtual).sort(
-    byDeadlineThenTitle,
-  );
+  const window = feedWindow("day", day);
+  const virtual = live
+    .flatMap((series) =>
+      seriesOccurrences(series, window, timeZone, seriesTags.get(series.id) ?? []),
+    )
+    .filter((entry) => matchesFilters(entry, active));
+
+  return mergeOccurrences(
+    rows.map((row) => fromRow(row, rowTags.get(row.id) ?? [])),
+    virtual,
+  ).sort(byDeadlineThenTitle);
 }
 
 /**
@@ -330,18 +396,28 @@ export async function listAllFeed(
   claims: UserClaims,
   today: string,
   timeZone: string,
+  filters?: TaskFilters,
 ): Promise<ListedOccurrence[]> {
+  const active = normaliseFilters(filters);
+
   const [rows, live] = await Promise.all([
-    occurrences.listAll(claims),
+    occurrences.listAll(claims, active),
     seriesRepo.listActive(claims),
   ]);
 
-  const window = feedWindow("all", today);
-  const virtual = live.flatMap((series) =>
-    seriesOccurrences(series, window, timeZone),
-  );
+  const { rowTags, seriesTags } = await loadTags(claims, rows, live);
 
-  return mergeOccurrences(rows.map(fromRow), virtual).sort(byDayDescending);
+  const window = feedWindow("all", today);
+  const virtual = live
+    .flatMap((series) =>
+      seriesOccurrences(series, window, timeZone, seriesTags.get(series.id) ?? []),
+    )
+    .filter((entry) => matchesFilters(entry, active));
+
+  return mergeOccurrences(
+    rows.map((row) => fromRow(row, rowTags.get(row.id) ?? [])),
+    virtual,
+  ).sort(byDayDescending);
 }
 
 /**
@@ -358,20 +434,28 @@ export async function listOverdueFeed(
   today: string,
   now: Date,
   timeZone: string,
+  filters?: TaskFilters,
 ): Promise<ListedOccurrence[]> {
+  const active = normaliseFilters(filters);
+
   const [rows, live] = await Promise.all([
-    occurrences.listOverdue(claims, now),
+    occurrences.listOverdue(claims, now, active),
     seriesRepo.listActive(claims),
   ]);
 
+  const { rowTags, seriesTags } = await loadTags(claims, rows, live);
+
   const window = feedWindow("overdue", today);
   const virtual = live
-    .flatMap((series) => seriesOccurrences(series, window, timeZone))
-    .filter((entry) => isOverdue(entry, now));
+    .flatMap((series) =>
+      seriesOccurrences(series, window, timeZone, seriesTags.get(series.id) ?? []),
+    )
+    .filter((entry) => isOverdue(entry, now) && matchesFilters(entry, active));
 
-  return mergeOccurrences(rows.map(fromRow), virtual).sort(
-    byDeadlineThenTitle,
-  );
+  return mergeOccurrences(
+    rows.map((row) => fromRow(row, rowTags.get(row.id) ?? [])),
+    virtual,
+  ).sort(byDeadlineThenTitle);
 }
 
 // ---------------------------------------------------------------------------
@@ -427,7 +511,7 @@ export async function materializeOccurrence(
   });
   if (named.length === 0) return null;
 
-  return occurrences.materialize(claims, {
+  const row = await occurrences.materialize(claims, {
     seriesId: series.id,
     occursOn: ref.occursOn,
     // The template, overridable by whatever the caller actually sent.
@@ -441,4 +525,41 @@ export async function materializeOccurrence(
     status: patch.status,
     progressPct: patch.progressPct,
   });
+
+  await copyTemplateTags(claims, series.id, row.id);
+
+  return row;
+}
+
+/**
+ * Copy a series' template tags onto a freshly materialised occurrence — **once**.
+ *
+ * "Once" is what the emptiness check buys. The upsert above runs on every touch,
+ * so re-copying would undo somebody who had removed a tag from this one
+ * occurrence — the same reasoning that stops the upsert resetting `status` and
+ * `progress_pct` from the template, and the same rule every other series field
+ * follows: the template seeds the occurrence and then lets go of it.
+ *
+ * It is a separate statement rather than part of the insert because
+ * `occurrence_tags` has a composite foreign key onto `(id, user_id)` and there is
+ * nothing to point at until the row exists.
+ */
+async function copyTemplateTags(
+  claims: UserClaims,
+  seriesId: string,
+  occurrenceId: string,
+): Promise<void> {
+  const alreadyTagged = await tagsRepo.tagsForOccurrences(claims, [
+    occurrenceId,
+  ]);
+  if (alreadyTagged.length > 0) return;
+
+  const template = await tagsRepo.tagsForSeries(claims, [seriesId]);
+  if (template.length === 0) return;
+
+  await tagsRepo.setForOccurrence(
+    claims,
+    occurrenceId,
+    template.map((link) => link.tag.id),
+  );
 }

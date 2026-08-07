@@ -10,6 +10,8 @@ import { Text } from "@/components/ui/text";
 import { Textarea } from "@/components/ui/textarea";
 import { DESCRIPTION_MAX_LENGTH, TITLE_MAX_LENGTH } from "@/lib/tasks/validators";
 
+import { TagPicker } from "@/components/tags/tag-picker";
+
 import { ProgressControl } from "./progress-control";
 import { StatusControl } from "./status-control";
 import {
@@ -73,6 +75,14 @@ export function TaskDialog({ open, onClose, clock, task = null }: TaskDialogProp
    * rather than in a toast that arrives after the row is gone.
    */
   const [armedForDelete, setArmedForDelete] = React.useState(false);
+  /**
+   * Seeded from the task at mount, like every other field. Sent on every submit
+   * — the router reads `undefined` as "the picker was not on screen", so a
+   * value here always means a deliberate selection.
+   */
+  const [tagIds, setTagIds] = React.useState<string[]>(
+    () => task?.tags.map((tag) => tag.id) ?? [],
+  );
 
   const saving = task ? update.isPending : create.isPending;
   const mutationError = task ? update.error : create.error;
@@ -130,7 +140,10 @@ export function TaskDialog({ open, onClose, clock, task = null }: TaskDialogProp
         return;
       }
 
-      update.mutate(result.data, { onSuccess: onClose });
+      update.mutate(
+        { ...result.data, ...changedTagIds() },
+        { onSuccess: onClose },
+      );
       return;
     }
 
@@ -140,7 +153,28 @@ export function TaskDialog({ open, onClose, clock, task = null }: TaskDialogProp
       return;
     }
     setErrors({});
-    create.mutate(result.data, { onSuccess: onClose });
+    create.mutate({ ...result.data, tagIds }, { onSuccess: onClose });
+  }
+
+  /**
+   * `{ tagIds }` only when the selection actually moved, and `{}` otherwise.
+   *
+   * The same rule every other field in this dialog follows: an edit sends what
+   * changed, not the whole task. Sending the selection unconditionally would be
+   * harmless today — nothing but this dialog writes tags — but it would make the
+   * payload stop describing the user's edit, which is the property that stops a
+   * dialog opened at 09:00 and submitted at 09:05 writing back something a row
+   * control changed in between.
+   */
+  function changedTagIds(): { tagIds?: string[] } {
+    const before = [...(task?.tags.map((tag) => tag.id) ?? [])].sort();
+    const after = [...tagIds].sort();
+
+    const same =
+      before.length === after.length &&
+      before.every((id, index) => id === after[index]);
+
+    return same ? {} : { tagIds };
   }
 
   function handleDelete() {
@@ -290,6 +324,12 @@ export function TaskDialog({ open, onClose, clock, task = null }: TaskDialogProp
             onChange={(status) => setValue("status", status)}
           />
         </Field>
+
+        <TagPicker
+          id={`${fieldId}-tags`}
+          value={tagIds}
+          onChange={setTagIds}
+        />
 
         {/* Deliberately its own field and not derived from the one above it: a
             task can be Done at 40%, and neither control writes to the other. */}

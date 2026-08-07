@@ -6,6 +6,8 @@ import { TableCell, TableRow } from "@/components/ui/table";
 import { Text } from "@/components/ui/text";
 import { isOverdue } from "@/lib/tasks/overdue";
 
+import { TagChips } from "@/components/tags/tag-chips";
+
 import { ProgressControl } from "./progress-control";
 import { RepeatButton } from "./repeat-button";
 import { StatusControl } from "./status-control";
@@ -92,6 +94,9 @@ export function TaskRow({
               {task.description}
             </Text>
           )}
+          {/* One component, rendered by the row and the card alike, so the group
+              is named once and the two presentations cannot drift. */}
+          <TagChips title={task.title} tags={task.tags} className="mt-1 flex flex-wrap items-center gap-1" />
         </TableCell>
 
         {showDay && (

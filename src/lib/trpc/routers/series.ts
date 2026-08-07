@@ -2,13 +2,15 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 
 import * as seriesRepo from "@/lib/db/repos/series";
-import type { TaskSeries } from "@/lib/db/schema";
-import { ruleFromSeries } from "@/lib/tasks/feed";
+import * as tagsRepo from "@/lib/db/repos/tags";
+import type { TagColor, TaskSeries } from "@/lib/db/schema";
+import { groupTags, ruleFromSeries } from "@/lib/tasks/feed";
 import {
   seriesInput,
   seriesUpdateInput,
   toRecurrenceRule,
 } from "@/lib/tasks/series-validators";
+import { tagIdsField } from "@/lib/tasks/tag-validators";
 import { taskIdField } from "@/lib/tasks/validators";
 
 import { activeProcedure, router } from "../server";
@@ -58,7 +60,10 @@ function claimsFor(ctx: { user: { id: string; email?: string } }) {
  *   useful for debugging and for the day the `rrule` package is adopted. The
  *   editor binds to the typed fields; nothing parses this string on the client.
  */
-function toPublicSeries(series: TaskSeries) {
+function toPublicSeries(
+  series: TaskSeries,
+  tags: ReadonlyArray<{ id: string; name: string; color: TagColor }> = [],
+) {
   return {
     id: series.id,
     title: series.title,
@@ -69,6 +74,8 @@ function toPublicSeries(series: TaskSeries) {
     deadlineTime: series.deadlineTime ? series.deadlineTime.slice(0, 5) : null,
     rule: ruleFromSeries(series),
     rrule: series.rrule,
+    /** The template tags, copied onto each occurrence as it materialises. */
+    tags: tags.map((tag) => ({ id: tag.id, name: tag.name, color: tag.color })),
     createdAt: series.createdAt.toISOString(),
     updatedAt: series.updatedAt.toISOString(),
   };
@@ -78,9 +85,20 @@ export type PublicSeries = ReturnType<typeof toPublicSeries>;
 
 export const seriesRouter = router({
   /** Every live series the caller owns. Deleted ones are never listed. */
-  list: activeProcedure.query(async ({ ctx }) =>
-    (await seriesRepo.listActive(claimsFor(ctx))).map(toPublicSeries),
-  ),
+  list: activeProcedure.query(async ({ ctx }) => {
+    const live = await seriesRepo.listActive(claimsFor(ctx));
+
+    // One query for every series on the page, not one per series.
+    const links = await tagsRepo.tagsForSeries(
+      claimsFor(ctx),
+      live.map((series) => series.id),
+    );
+    const bySeries = groupTags(links);
+
+    return live.map((series) =>
+      toPublicSeries(series, bySeries.get(series.id) ?? []),
+    );
+  }),
 
   /**
    * One series, for the editor.
@@ -97,7 +115,12 @@ export const seriesRouter = router({
       if (!found) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Series not found" });
       }
-      return toPublicSeries(found);
+
+      const links = await tagsRepo.tagsForSeries(claimsFor(ctx), [found.id]);
+      return toPublicSeries(
+        found,
+        links.map((link) => link.tag),
+      );
     }),
 
   /**
@@ -109,7 +132,7 @@ export const seriesRouter = router({
    * row rather than 365.
    */
   create: activeProcedure
-    .input(seriesInput)
+    .input(seriesInput.and(z.object({ tagIds: tagIdsField })))
     .mutation(async ({ ctx, input }) => {
       const created = await seriesRepo.create(claimsFor(ctx), {
         title: input.title,
@@ -119,7 +142,18 @@ export const seriesRouter = router({
         rule: toRecurrenceRule(input.rule),
       });
 
-      return toPublicSeries(created);
+      // Template tags. Written to `series_tags` only — occurrences that already
+      // exist keep whatever they materialised with, which is the same rule every
+      // other series field follows.
+      if (input.tagIds?.length) {
+        await tagsRepo.setForSeries(claimsFor(ctx), created.id, input.tagIds);
+      }
+
+      const links = await tagsRepo.tagsForSeries(claimsFor(ctx), [created.id]);
+      return toPublicSeries(
+        created,
+        links.map((link) => link.tag),
+      );
     }),
 
   /**
@@ -132,7 +166,7 @@ export const seriesRouter = router({
    * including on a date the new rule no longer names.
    */
   update: activeProcedure
-    .input(seriesUpdateInput)
+    .input(seriesUpdateInput.and(z.object({ tagIds: tagIdsField })))
     .mutation(async ({ ctx, input }) => {
       const updated = await seriesRepo.update(claimsFor(ctx), input.id, {
         title: input.title,
@@ -146,7 +180,15 @@ export const seriesRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message: "Series not found" });
       }
 
-      return toPublicSeries(updated);
+      if (input.tagIds !== undefined) {
+        await tagsRepo.setForSeries(claimsFor(ctx), updated.id, input.tagIds);
+      }
+
+      const links = await tagsRepo.tagsForSeries(claimsFor(ctx), [updated.id]);
+      return toPublicSeries(
+        updated,
+        links.map((link) => link.tag),
+      );
     }),
 
   /**

@@ -1,12 +1,64 @@
 /**
- * Mailpit helpers — the local stack's mail catcher (port 54424).
+ * Mailpit helpers — the local stack's mail catcher.
  *
  * Email confirmation is ON (`enable_confirmations = true`), so a signup does not
  * produce a session. Any e2e that walks the real signup journey has to go and read
  * the confirmation link out of the inbox, exactly as a person would.
+ *
+ * ## Why the port is derived rather than hard-coded
+ *
+ * This used to be a literal `54424`, which is **main's** inbox. Every worktree
+ * runs its own Supabase stack on its own port base — phase 3/4 on 5443x, phase 5
+ * on 5444x — so in any of them that literal pointed at a different stack's mail
+ * catcher.
+ *
+ * The failure is quiet and misleading rather than loud: the fetch succeeds, the
+ * inbox is genuinely reachable, it simply never contains the message *this* stack
+ * just sent. The spec then fails with "No mail for … within 15000ms", which reads
+ * as a broken signup rather than as a harness pointed at the wrong port. It cost
+ * a debugging session before it was understood.
+ *
+ * Deriving it from `NEXT_PUBLIC_SUPABASE_URL` — which `playwright.config.ts`
+ * already loads from `.env.local`, and which is per-worktree by construction —
+ * means a new worktree needs no extra environment at all. Setting a variable in
+ * every `.env.worktree` would also work, and would be one more untracked thing to
+ * remember exactly once per worktree and then debug when it is forgotten.
  */
 
-const MAILPIT = process.env.MAILPIT_URL ?? "http://127.0.0.1:54424";
+/**
+ * Mailpit sits three ports above the API — in every stack here, and in Supabase's
+ * own default config (`api 54321`, `db 54322`, `studio 54323`, `inbucket 54324`).
+ * Each worktree was created by shifting that whole base, so the offset survives:
+ * main 54421 → 54424, phase 3/4 54431 → 54434, phase 5 54441 → 54444.
+ *
+ * A convention rather than a guarantee, which is exactly what `MAILPIT_URL` is
+ * for: anyone who breaks the layout says so explicitly instead of editing this.
+ */
+const MAILPIT_PORT_OFFSET = 3;
+
+function resolveMailpitUrl(): string {
+  // An explicit override always wins.
+  if (process.env.MAILPIT_URL) return process.env.MAILPIT_URL;
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (supabaseUrl) {
+    try {
+      const url = new URL(supabaseUrl);
+      const apiPort = Number(url.port);
+      if (Number.isInteger(apiPort) && apiPort > 0) {
+        return `${url.protocol}//${url.hostname}:${apiPort + MAILPIT_PORT_OFFSET}`;
+      }
+    } catch {
+      // A malformed URL falls through to the default rather than throwing out of
+      // module initialisation, which would take down every spec in the suite
+      // instead of only the ones that actually read mail.
+    }
+  }
+
+  return "http://127.0.0.1:54424";
+}
+
+const MAILPIT = resolveMailpitUrl();
 
 interface MailpitSummary {
   ID: string;

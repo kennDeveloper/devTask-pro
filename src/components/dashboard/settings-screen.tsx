@@ -26,6 +26,7 @@ import {
   validateProfileForm,
   type ProfileFormErrors,
 } from "@/lib/profile-form";
+import { TagManager } from "@/components/tags/tag-manager";
 import { trpc } from "@/lib/trpc/client";
 import type { AppRouter } from "@/lib/trpc/routers/_app";
 
@@ -104,6 +105,10 @@ export function SettingsScreen() {
           </CardContent>
         </Card>
       )}
+
+      {/* A sibling card, not a section inside another one — and no new route, so
+          `nav-config.tsx` stays untouched for phase 5. */}
+      <TagManager />
 
       <Card>
         <CardHeader>
