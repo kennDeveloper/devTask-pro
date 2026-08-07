@@ -115,8 +115,15 @@ enabled = true
 # Port to use for the email testing server web interface. Phase 1's e2e reads the
 # signup confirmation link out of this mail catcher — no real mail is ever sent locally.
 port = 54424
-# Uncomment to expose additional ports for testing user applications that send emails.
-# smtp_port = 54325
+# Phase 6 sends its own mail — the reminder job, through `src/lib/email/send.ts`
+# — rather than only triggering Supabase Auth's. That needs the catcher's SMTP
+# port open, not just its web UI, so `e2e/reminders.spec.ts` can assert a real
+# reminder arrives instead of trusting a mocked transport.
+#
+# 54425, not the commented-out 54325 this file shipped with: every port in this
+# stack is 5442x (api 54421, db 54422, studio 54423, mail UI 54424). A change
+# here needs `supabase stop && pnpm db:start` — `db:reset` will not open it.
+smtp_port = 54425
 # pop3_port = 54326
 # admin_email = "admin@email.com"
 # sender_name = "Admin"
